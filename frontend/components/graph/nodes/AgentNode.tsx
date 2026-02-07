@@ -5,16 +5,16 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NodeStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { 
-    Brain, 
-    Zap, 
-    Search, 
-    Code, 
-    Crosshair, 
-    Package, 
-    Palette, 
-    Trophy, 
-    Check 
+import {
+    Brain,
+    Zap,
+    Search,
+    Code,
+    Crosshair,
+    Package,
+    Palette,
+    Trophy,
+    Check
 } from "lucide-react";
 
 const ICONS = {
@@ -82,7 +82,7 @@ function AgentNodeComponent({ data, selected }: AgentNodeProps): React.ReactElem
             <span className="text-sm font-semibold text-foreground leading-tight">{role}</span>
           </div>
         </div>
-        
+
         {/* Status Indicator */}
         <div className={cn(
             "h-2 w-2 rounded-full",
@@ -100,9 +100,9 @@ function AgentNodeComponent({ data, selected }: AgentNodeProps): React.ReactElem
              <span>{Math.min(100, Math.round(progress))}%</span>
           </div>
           <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
-            <div 
-                className="h-full bg-foreground transition-all duration-300" 
-                style={{ width: `${progress}%` }} 
+            <div
+                className="h-full bg-foreground transition-all duration-300"
+                style={{ width: `${progress}%` }}
             />
           </div>
         </div>

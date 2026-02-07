@@ -538,6 +538,27 @@ class TestGetFiles:
         assert resp.status_code == 400
         assert "traversal" in resp.json()["detail"].lower()
 
+    def test_get_files_allows_explicit_current_sandbox_id(
+        self, client: TestClient, mock_session_manager: MagicMock
+    ) -> None:
+        mock_session_manager.get_session.return_value = _make_session_info(
+            sandbox_id="hypothesis_pending"
+        )
+        resp = client.get(
+            "/api/sessions/sess_aabb11223344/files?sandbox_id=hypothesis_pending"
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_get_files_rejects_cross_session_sandbox_id(
+        self, client: TestClient
+    ) -> None:
+        resp = client.get(
+            "/api/sessions/sess_aabb11223344/files?sandbox_id=sandbox_solver1_deadbeef0000"
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid sandbox_id for this session"
+
 
 # =========================================================================
 # Get File Content
@@ -579,6 +600,19 @@ class TestGetFileContent:
             "/api/sessions/sess_aabb11223344/files/content?path=nonexistent.ts"
         )
         assert resp.status_code == 404
+
+    def test_get_file_content_hypothesis_pending_conflict(
+        self, client: TestClient, mock_session_manager: MagicMock
+    ) -> None:
+        mock_session_manager.get_session.return_value = _make_session_info(
+            sandbox_id="hypothesis_pending"
+        )
+        resp = client.get(
+            "/api/sessions/sess_aabb11223344/files/content?path=src/App.tsx"
+            "&sandbox_id=hypothesis_pending"
+        )
+        assert resp.status_code == 409
+        assert "Hypothesis solvers are still working." in resp.json()["detail"]
 
 
 # =========================================================================

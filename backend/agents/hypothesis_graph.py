@@ -14,6 +14,7 @@ Events emitted:
 """
 
 import asyncio
+import contextlib
 import json
 import operator
 import time
@@ -829,10 +830,8 @@ class HypothesisGraph:
 
             # Best-effort sandbox cleanup on failure to prevent leaks.
             # The sandbox may not exist yet if creation itself failed.
-            try:
+            with contextlib.suppress(Exception):
                 await self.sandbox_manager.destroy_sandbox(sandbox_id)
-            except Exception:
-                pass
 
             return {
                 "hypothesis_results": [

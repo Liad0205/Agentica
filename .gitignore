@@ -94,6 +94,11 @@ lerna-debug.log*
 docker-compose.override.yml
 
 # ===================
+# Pre-commit
+# ===================
+.pre-commit-cache/
+
+# ===================
 # Misc
 # ===================
 *.bak

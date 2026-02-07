@@ -50,7 +50,7 @@ def _resolve_sandbox_id(
     requested_sandbox_id: str,
 ) -> str:
     """Resolve a sandbox id while preventing cross-session access."""
-    if requested_sandbox_id in ("", "primary"):
+    if requested_sandbox_id in ("", "primary", session_sandbox_id):
         return session_sandbox_id
 
     suffix = f"_{session_id[5:]}"  # strip "sess_"
@@ -65,14 +65,14 @@ def _resolve_sandbox_id(
 
 def _to_int(value: object) -> int:
     """Safely coerce a value to int for metric conversion."""
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return int(value)
     return 0
 
 
 def _to_float(value: object) -> float:
     """Safely coerce a value to float for timestamp conversion."""
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return float(value)
     return 0.0
 

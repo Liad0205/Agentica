@@ -1,0 +1,36 @@
+# Pre-commit hooks for lint checks
+# Install: cd backend && uv run pre-commit install
+# Run all: cd backend && uv run pre-commit run --all-files
+
+repos:
+  # General file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+        exclude: ^sandbox-image/template/
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  # Python linting with Ruff (backend only)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^backend/
+
+  # Frontend ESLint (local hook)
+  # Runs from frontend/ dir; strips the "frontend/" prefix from paths pre-commit passes.
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: bash -c 'cd frontend && args=(); for f in "$@"; do args+=("${f#frontend/}"); done; npx eslint "${args[@]}"' --
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx)$
+        types: [file]
