@@ -1,0 +1,60 @@
+[project]
+name = "agent-swarm-backend"
+version = "0.1.0"
+description = "Backend for Agent Swarm POC - comparing AI-assisted coding paradigms"
+license = "MIT"
+authors = [{name = "Liad Mazor"}]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "langgraph>=0.2.0",
+    "litellm>=1.40.0",
+    "docker>=7.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "structlog>=24.0.0",
+    "python-multipart>=0.0.9",
+    "websockets>=12.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "httpx>=0.27.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/<your-username>/agent-swarm-poc"
+Repository = "https://github.com/<your-username>/agent-swarm-poc"
+Issues = "https://github.com/<your-username>/agent-swarm-poc/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["agents", "api", "events", "models", "sandbox", "config.py", "main.py", "session_manager.py"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

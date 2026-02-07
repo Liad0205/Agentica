@@ -1,0 +1,124 @@
+# ===================
+# Dependencies
+# ===================
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.uv/
+.uv-cache/
+
+# ===================
+# Build outputs
+# ===================
+# Next.js
+.next/
+out/
+
+# Python
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# TypeScript
+*.tsbuildinfo
+
+# ===================
+# Environment & Secrets
+# ===================
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+*.pem
+*.key
+
+# ===================
+# IDE & Editors
+# ===================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ===================
+# OS Files
+# ===================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===================
+# Testing & Coverage
+# ===================
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.nyc_output/
+*.lcov
+test-results/
+playwright-report/
+blob-report/
+
+# ===================
+# Logs & Debug
+# ===================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ===================
+# Docker
+# ===================
+# Don't ignore Dockerfile or docker-compose, just logs
+docker-compose.override.yml
+
+# ===================
+# Misc
+# ===================
+*.bak
+*.tmp
+*.temp
+.cache/
+.parcel-cache/
+.turbo/
+
+# ===================
+# Project-specific
+# ===================
+# Claude Code artifacts
+.claude/
+
+# Sandbox artifacts (if any local testing)
+sandbox-data/
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+!backend/data/.gitkeep
+
+# Dev script artifacts
+.backend.pid
+.frontend.pid
+.logs/

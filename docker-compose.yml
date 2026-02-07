@@ -1,0 +1,36 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    command: ["sh", "-lc", "uv sync && uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000"]
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+      - /var/run/docker.sock:/var/run/docker.sock  # For sandbox management
+    env_file:
+      - .env
+    depends_on:
+      - sandbox-builder
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    command: ["sh", "-lc", "if [ ! -d node_modules ]; then npm install; fi && npm run dev"]
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
+    depends_on:
+      - backend
+
+  sandbox-builder:
+    build: ./sandbox-image
+    image: agent-swarm-sandbox:latest
+    command: ["echo", "Sandbox image built"]
+
+volumes:
+  backend_venv:

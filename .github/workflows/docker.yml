@@ -1,0 +1,19 @@
+name: Docker Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sandbox-image/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sandbox-image/**'
+
+jobs:
+  build-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build -t agent-swarm-sandbox:latest ./sandbox-image
