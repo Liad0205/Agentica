@@ -52,6 +52,41 @@ function httpToWsUrl(httpUrl: string): string {
 }
 
 /**
+ * Build a websocket URL from an environment-configured base URL.
+ *
+ * Supported NEXT_PUBLIC_WS_URL formats:
+ * - ws://host:port
+ * - ws://host:port/ws
+ * - ws://host:port/ws/{session_id}
+ */
+function buildSocketUrl(sessionId: string): string {
+  const configuredBase = process.env.NEXT_PUBLIC_WS_URL?.trim();
+  const defaultBase = httpToWsUrl(BACKEND_URL);
+  const rawBase = configuredBase || defaultBase;
+
+  try {
+    const parsed = new URL(rawBase);
+    const wsPath = API_ENDPOINTS.websocket(sessionId);
+
+    if (configuredBase && parsed.pathname.includes("{session_id}")) {
+      parsed.pathname = parsed.pathname.replace("{session_id}", sessionId);
+      return parsed.toString();
+    }
+
+    if (configuredBase && /\/ws\/?$/.test(parsed.pathname)) {
+      parsed.pathname = `${parsed.pathname.replace(/\/$/, "")}/${sessionId}`;
+      return parsed.toString();
+    }
+
+    parsed.pathname = wsPath;
+    return parsed.toString();
+  } catch {
+    const wsPath = API_ENDPOINTS.websocket(sessionId);
+    return `${rawBase.replace(/\/$/, "")}${wsPath}`;
+  }
+}
+
+/**
  * WebSocket client implementation with auto-reconnect and keep-alive support.
  */
 class WebSocketClientImpl implements WebSocketClient {
@@ -62,6 +97,7 @@ class WebSocketClientImpl implements WebSocketClient {
   private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private pingIntervalId: ReturnType<typeof setInterval> | null = null;
   private isCleanClose = false;
+  private currentSocketUrl: string | null = null;
 
   private eventHandlers: Set<(event: AgentEvent) => void> = new Set();
   private statusHandlers: Set<(status: ConnectionStatus) => void> = new Set();
@@ -137,11 +173,8 @@ class WebSocketClientImpl implements WebSocketClient {
     }
 
     this.setStatus("connecting");
-
-    const wsBaseUrl =
-      process.env.NEXT_PUBLIC_WS_URL ?? httpToWsUrl(BACKEND_URL);
-    const wsPath = API_ENDPOINTS.websocket(this.currentSessionId);
-    const wsUrl = `${wsBaseUrl}${wsPath}`;
+    const wsUrl = buildSocketUrl(this.currentSessionId);
+    this.currentSocketUrl = wsUrl;
 
     try {
       this.socket = new WebSocket(wsUrl);
@@ -167,20 +200,44 @@ class WebSocketClientImpl implements WebSocketClient {
       this.startPingInterval();
     };
 
-    this.socket.onclose = (): void => {
+    this.socket.onclose = (event: CloseEvent): void => {
       this.stopPingInterval();
 
       if (this.isCleanClose) {
         this.setStatus("disconnected");
       } else {
-        // Unexpected close - attempt reconnection
+        const nonRecoverable =
+          event.code === 4400 || // invalid session id format
+          event.code === 4404 || // session not found
+          event.code === 1008; // policy violation
+
+        console.warn("[WS] WebSocket closed", {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          url: this.currentSocketUrl,
+          sessionId: this.currentSessionId,
+        });
+
+        if (nonRecoverable) {
+          // Permanent failure for this session; avoid reconnect loops.
+          this.setStatus("error");
+          return;
+        }
+
+        // Unexpected but recoverable close - attempt reconnection.
         this.setStatus("disconnected");
         this.scheduleReconnect();
       }
     };
 
     this.socket.onerror = (event: Event): void => {
-      console.error("[WS] WebSocket error:", event);
+      console.error("[WS] WebSocket transport error", {
+        eventType: event.type,
+        url: this.currentSocketUrl,
+        sessionId: this.currentSessionId,
+        readyState: this.socket?.readyState,
+      });
       this.setStatus("error");
     };
 
@@ -307,6 +364,7 @@ class WebSocketClientImpl implements WebSocketClient {
       }
       this.socket = null;
     }
+    this.currentSocketUrl = null;
   }
 }
 

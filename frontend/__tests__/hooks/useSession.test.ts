@@ -692,6 +692,31 @@ describe("restoreSessionFromStorage", () => {
     expect(wsClient.connect).toHaveBeenCalledWith("sess-running");
   });
 
+  it("rehydrates terminal persisted session without websocket replay", async () => {
+    window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, "sess-done");
+    vi.mocked(api.getSession).mockResolvedValue({
+      session_id: "sess-done",
+      mode: "react",
+      status: "complete",
+      task: "finished run",
+      created_at: Date.now() / 1000,
+      started_at: Date.now() / 1000,
+      completed_at: Date.now() / 1000,
+      error_message: null,
+      llm_config: null,
+    });
+
+    renderHook(() => useSession());
+
+    await waitFor(() => {
+      expect(api.getSession).toHaveBeenCalledWith("sess-done");
+    });
+
+    expect(useStore.getState().sessionId).toBe("sess-done");
+    expect(useStore.getState().sessionStatus).toBe("complete");
+    expect(wsClient.connect).not.toHaveBeenCalled();
+  });
+
   it("clears stale persisted session id when backend returns 404", async () => {
     window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, "sess-missing");
     const { ApiError } = await import("@/lib/api");

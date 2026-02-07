@@ -86,7 +86,10 @@ function cleanupSubscriptions(): void {
   }
 }
 
-function applySessionDetail(detail: SessionDetailResponse): void {
+function applySessionDetail(
+  detail: SessionDetailResponse,
+  options?: { allowTerminalReplay?: boolean }
+): void {
   const store = useStore.getState();
 
   store.setMode(detail.mode);
@@ -98,14 +101,19 @@ function applySessionDetail(detail: SessionDetailResponse): void {
 
   persistSessionId(detail.session_id);
 
-  // Connect the WebSocket for event streaming / history replay.
-  // For active sessions we always connect.  For terminal sessions we only
-  // connect when the store has no events yet (i.e., after a page refresh)
-  // because that's the only case where replay is useful.  Avoiding the WS
-  // connection for terminal sessions that already have events prevents
-  // spurious connection errors when the backend is unreachable.
+  // Connect the WebSocket for active sessions and optional terminal replay.
+  // We do not auto-replay terminal sessions during storage restore because
+  // those sessions may exist only in persistence (not in-memory WS stream),
+  // which causes immediate WS errors.
   const isActive = detail.status === "started" || detail.status === "running";
-  const needsReplay = useStore.getState().events.length === 0;
+  const allowTerminalReplay = options?.allowTerminalReplay ?? false;
+  const needsReplay =
+    allowTerminalReplay &&
+    useStore.getState().events.length === 0 &&
+    (detail.status === "complete" ||
+      detail.status === "error" ||
+      detail.status === "cancelled");
+
   if (isActive || needsReplay) {
     ensureSubscriptions();
     wsClient.connect(detail.session_id);
@@ -130,7 +138,7 @@ async function restoreSessionFromStorage(): Promise<void> {
 
   try {
     const detail = await api.getSession(persistedSessionId);
-    applySessionDetail(detail);
+    applySessionDetail(detail, { allowTerminalReplay: false });
   } catch (error) {
     clearPersistedSessionId();
     if (!(error instanceof ApiError && error.status === 404)) {
@@ -411,7 +419,7 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
       }
 
       const detail = await api.getSession(targetSessionId);
-      applySessionDetail(detail);
+      applySessionDetail(detail, { allowTerminalReplay: true });
 
       if (withSessionList) {
         await refreshSessions();
