@@ -180,6 +180,13 @@ class TestReactGraphExecution:
         assert final["iteration"] == 2
         # LLM was called 4 times: reason, review, reason, review
         assert len(mock_llm.call_history) == 4
+        # After NEEDS_REVISION review, graph injects a user handoff so the
+        # next reason step has an actionable user turn.
+        second_reason_messages = mock_llm.call_history[2]["messages"]
+        assert second_reason_messages[-1]["role"] == "user"
+        assert "Continue implementing now based on the review above" in str(
+            second_reason_messages[-1]["content"]
+        )
 
     @pytest.mark.asyncio
     async def test_completion_blocked_without_build_and_lint_verification(

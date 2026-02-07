@@ -598,6 +598,23 @@ class ReactGraph:
                 "status": new_status,
             }
 
+        if not is_complete:
+            # Ensure the next reason step receives an explicit user turn.
+            # Some models stall or emit minimal output when the prior turn is
+            # assistant-only review feedback without a follow-up user message.
+            revision_handoff = (
+                "Continue implementing now based on the review above. "
+                "Use tools to inspect files, make targeted edits, and run "
+                "`npm run build` / `npm run lint` before reviewing again."
+            )
+            return {
+                "messages": [
+                    assistant_message,
+                    {"role": "user", "content": revision_handoff},
+                ],
+                "status": new_status,
+            }
+
         return {"messages": [assistant_message], "status": new_status}
 
     def _should_continue(self, state: ReactState) -> str:
