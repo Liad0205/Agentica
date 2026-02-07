@@ -5,19 +5,31 @@
  */
 
 import type { AgentEvent } from "./types";
-import { BACKEND_URL, CONFIG_DEFAULTS, API_ENDPOINTS } from "./constants";
+import {
+  BACKEND_URL,
+  CONFIG_DEFAULTS,
+  API_ENDPOINTS,
+} from "./constants";
 
 // Connection status states
-export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+export type ConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "error";
 
 // Commands that can be sent to the server
 export type WebSocketCommand =
   | { type: "cancel" }
   | { type: "ping"; timestamp: number };
 
-type IncomingMessage = AgentEvent | { type: "pong"; timestamp?: number };
+type IncomingMessage =
+  | AgentEvent
+  | { type: "pong"; timestamp?: number };
 
-function isAgentEvent(message: unknown): message is AgentEvent {
+function isAgentEvent(
+  message: unknown,
+): message is AgentEvent {
   if (!message || typeof message !== "object") {
     return false;
   }
@@ -37,7 +49,9 @@ export interface WebSocketClient {
   disconnect(): void;
   send(message: WebSocketCommand): void;
   onEvent(handler: (event: AgentEvent) => void): () => void;
-  onStatusChange(handler: (status: ConnectionStatus) => void): () => void;
+  onStatusChange(
+    handler: (status: ConnectionStatus) => void,
+  ): () => void;
   getStatus(): ConnectionStatus;
 }
 
@@ -60,7 +74,8 @@ function httpToWsUrl(httpUrl: string): string {
  * - ws://host:port/ws/{session_id}
  */
 function buildSocketUrl(sessionId: string): string {
-  const configuredBase = process.env.NEXT_PUBLIC_WS_URL?.trim();
+  const configuredBase =
+    process.env.NEXT_PUBLIC_WS_URL?.trim();
   const defaultBase = httpToWsUrl(BACKEND_URL);
   const rawBase = configuredBase || defaultBase;
 
@@ -68,12 +83,21 @@ function buildSocketUrl(sessionId: string): string {
     const parsed = new URL(rawBase);
     const wsPath = API_ENDPOINTS.websocket(sessionId);
 
-    if (configuredBase && parsed.pathname.includes("{session_id}")) {
-      parsed.pathname = parsed.pathname.replace("{session_id}", sessionId);
+    if (
+      configuredBase &&
+      parsed.pathname.includes("{session_id}")
+    ) {
+      parsed.pathname = parsed.pathname.replace(
+        "{session_id}",
+        sessionId,
+      );
       return parsed.toString();
     }
 
-    if (configuredBase && /\/ws\/?$/.test(parsed.pathname)) {
+    if (
+      configuredBase &&
+      /\/ws\/?$/.test(parsed.pathname)
+    ) {
       parsed.pathname = `${parsed.pathname.replace(/\/$/, "")}/${sessionId}`;
       return parsed.toString();
     }
@@ -94,13 +118,20 @@ class WebSocketClientImpl implements WebSocketClient {
   private status: ConnectionStatus = "disconnected";
   private currentSessionId: string | null = null;
   private reconnectAttempts = 0;
-  private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
-  private pingIntervalId: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimeoutId: ReturnType<
+    typeof setTimeout
+  > | null = null;
+  private pingIntervalId: ReturnType<
+    typeof setInterval
+  > | null = null;
   private isCleanClose = false;
   private currentSocketUrl: string | null = null;
 
-  private eventHandlers: Set<(event: AgentEvent) => void> = new Set();
-  private statusHandlers: Set<(status: ConnectionStatus) => void> = new Set();
+  private eventHandlers: Set<(event: AgentEvent) => void> =
+    new Set();
+  private statusHandlers: Set<
+    (status: ConnectionStatus) => void
+  > = new Set();
 
   /**
    * Connect to the WebSocket endpoint for a given session.
@@ -130,7 +161,10 @@ class WebSocketClientImpl implements WebSocketClient {
    * Send a command to the server.
    */
   send(message: WebSocketCommand): void {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+    if (
+      this.socket &&
+      this.socket.readyState === WebSocket.OPEN
+    ) {
       this.socket.send(JSON.stringify(message));
     }
   }
@@ -138,7 +172,9 @@ class WebSocketClientImpl implements WebSocketClient {
   /**
    * Register an event handler. Returns an unsubscribe function.
    */
-  onEvent(handler: (event: AgentEvent) => void): () => void {
+  onEvent(
+    handler: (event: AgentEvent) => void,
+  ): () => void {
     this.eventHandlers.add(handler);
     return () => {
       this.eventHandlers.delete(handler);
@@ -148,7 +184,9 @@ class WebSocketClientImpl implements WebSocketClient {
   /**
    * Register a status change handler. Returns an unsubscribe function.
    */
-  onStatusChange(handler: (status: ConnectionStatus) => void): () => void {
+  onStatusChange(
+    handler: (status: ConnectionStatus) => void,
+  ): () => void {
     this.statusHandlers.add(handler);
     // Immediately notify the handler of the current status
     handler(this.status);
@@ -180,7 +218,10 @@ class WebSocketClientImpl implements WebSocketClient {
       this.socket = new WebSocket(wsUrl);
       this.setupSocketHandlers();
     } catch (error) {
-      console.error("[WS] WebSocket connection error:", error);
+      console.error(
+        "[WS] WebSocket connection error:",
+        error,
+      );
       this.setStatus("error");
       this.scheduleReconnect();
     }
@@ -194,7 +235,12 @@ class WebSocketClientImpl implements WebSocketClient {
       return;
     }
 
+    // Track if connection was ever successfully opened.
+    // Used to detect early rejection (e.g., 4404 session not found before accept).
+    let wasOpened = false;
+
     this.socket.onopen = (): void => {
+      wasOpened = true;
       this.setStatus("connected");
       this.reconnectAttempts = 0;
       this.startPingInterval();
@@ -205,30 +251,48 @@ class WebSocketClientImpl implements WebSocketClient {
 
       if (this.isCleanClose) {
         this.setStatus("disconnected");
-      } else {
-        const nonRecoverable =
-          event.code === 4400 || // invalid session id format
-          event.code === 4404 || // session not found
-          event.code === 1008; // policy violation
-
-        console.warn("[WS] WebSocket closed", {
-          code: event.code,
-          reason: event.reason,
-          wasClean: event.wasClean,
-          url: this.currentSocketUrl,
-          sessionId: this.currentSessionId,
-        });
-
-        if (nonRecoverable) {
-          // Permanent failure for this session; avoid reconnect loops.
-          this.setStatus("error");
-          return;
-        }
-
-        // Unexpected but recoverable close - attempt reconnection.
-        this.setStatus("disconnected");
-        this.scheduleReconnect();
+        return;
       }
+
+      // If connection was rejected before onopen fired, treat as non-recoverable.
+      // This happens when backend closes the WebSocket before accepting (e.g., session not found).
+      // Reconnecting would hit the same error, so avoid the retry loop.
+      if (!wasOpened) {
+        console.warn(
+          "[WS] Connection rejected before open",
+          {
+            code: event.code,
+            reason: event.reason,
+            url: this.currentSocketUrl,
+            sessionId: this.currentSessionId,
+          },
+        );
+        this.setStatus("error");
+        return;
+      }
+
+      const nonRecoverable =
+        event.code === 4400 || // invalid session id format
+        event.code === 4404 || // session not found
+        event.code === 1008; // policy violation
+
+      console.warn("[WS] WebSocket closed", {
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+        url: this.currentSocketUrl,
+        sessionId: this.currentSessionId,
+      });
+
+      if (nonRecoverable) {
+        // Permanent failure for this session; avoid reconnect loops.
+        this.setStatus("error");
+        return;
+      }
+
+      // Unexpected but recoverable close - attempt reconnection.
+      this.setStatus("disconnected");
+      this.scheduleReconnect();
     };
 
     this.socket.onerror = (event: Event): void => {
@@ -238,10 +302,14 @@ class WebSocketClientImpl implements WebSocketClient {
         sessionId: this.currentSessionId,
         readyState: this.socket?.readyState,
       });
-      this.setStatus("error");
+      // Don't set error status here; let onclose handle it.
+      // The onerror event is always followed by onclose, and onclose
+      // has better context (wasOpened, close code) for error handling.
     };
 
-    this.socket.onmessage = (event: MessageEvent<string>): void => {
+    this.socket.onmessage = (
+      event: MessageEvent<string>,
+    ): void => {
       this.handleMessage(event.data);
     };
   }
@@ -260,9 +328,16 @@ class WebSocketClientImpl implements WebSocketClient {
         return;
       }
 
-      console.warn("Ignoring unrecognized WebSocket payload", message);
+      console.warn(
+        "Ignoring unrecognized WebSocket payload",
+        message,
+      );
     } catch (error) {
-      console.error("Failed to parse WebSocket message:", error, data);
+      console.error(
+        "Failed to parse WebSocket message:",
+        error,
+        data,
+      );
     }
   }
 
@@ -303,14 +378,19 @@ class WebSocketClientImpl implements WebSocketClient {
       return;
     }
 
-    if (this.reconnectAttempts >= CONFIG_DEFAULTS.wsMaxReconnectAttempts) {
+    if (
+      this.reconnectAttempts >=
+      CONFIG_DEFAULTS.wsMaxReconnectAttempts
+    ) {
       console.error("Max reconnect attempts reached");
       this.setStatus("error");
       return;
     }
 
     // Exponential backoff: baseDelay * 2^attempts
-    const delay = CONFIG_DEFAULTS.wsReconnectDelayMs * Math.pow(2, this.reconnectAttempts);
+    const delay =
+      CONFIG_DEFAULTS.wsReconnectDelayMs *
+      Math.pow(2, this.reconnectAttempts);
     this.reconnectAttempts++;
 
     this.reconnectTimeoutId = setTimeout(() => {

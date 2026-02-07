@@ -4,10 +4,18 @@
  * along with WebSocket connection management.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useStore } from "@/lib/store";
 import { ApiError, api } from "@/lib/api";
-import { wsClient, type ConnectionStatus } from "@/lib/websocket";
+import {
+  wsClient,
+  type ConnectionStatus,
+} from "@/lib/websocket";
 import type {
   Mode,
   ModelConfig,
@@ -16,9 +24,16 @@ import type {
   SessionSummary,
 } from "@/lib/types";
 
-const ACTIVE_SESSION_STORAGE_KEY = "agent_arena.active_session_id";
-const CONTINUABLE_SESSION_STATUSES: SessionStatus[] = ["complete", "error"];
-const ACTIVE_SESSION_STATUSES: SessionStatus[] = ["started", "running"];
+const ACTIVE_SESSION_STORAGE_KEY =
+  "agent_arena.active_session_id";
+const CONTINUABLE_SESSION_STATUSES: SessionStatus[] = [
+  "complete",
+  "error",
+];
+const ACTIVE_SESSION_STATUSES: SessionStatus[] = [
+  "started",
+  "running",
+];
 
 class SessionActionRequiredError extends Error {
   constructor(message: string) {
@@ -36,21 +51,28 @@ function getPersistedSessionId(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
-  return window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+  return window.localStorage.getItem(
+    ACTIVE_SESSION_STORAGE_KEY,
+  );
 }
 
 function persistSessionId(sessionId: string): void {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, sessionId);
+  window.localStorage.setItem(
+    ACTIVE_SESSION_STORAGE_KEY,
+    sessionId,
+  );
 }
 
 function clearPersistedSessionId(): void {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+  window.localStorage.removeItem(
+    ACTIVE_SESSION_STORAGE_KEY,
+  );
 }
 
 function ensureSubscriptions(): void {
@@ -67,11 +89,13 @@ function ensureSubscriptions(): void {
       const store = useStore.getState();
       store.setConnectionStatus(connectionStatus);
       if (connectionStatus === "error") {
-        store.setConnectionError("WebSocket connection failed");
+        store.setConnectionError(
+          "WebSocket connection failed",
+        );
       } else if (connectionStatus === "connected") {
         store.setConnectionError(null);
       }
-    }
+    },
   );
 }
 
@@ -88,7 +112,7 @@ function cleanupSubscriptions(): void {
 
 function applySessionDetail(
   detail: SessionDetailResponse,
-  options?: { allowTerminalReplay?: boolean }
+  options?: { allowTerminalReplay?: boolean },
 ): void {
   const store = useStore.getState();
 
@@ -105,8 +129,11 @@ function applySessionDetail(
   // We do not auto-replay terminal sessions during storage restore because
   // those sessions may exist only in persistence (not in-memory WS stream),
   // which causes immediate WS errors.
-  const isActive = detail.status === "started" || detail.status === "running";
-  const allowTerminalReplay = options?.allowTerminalReplay ?? false;
+  const isActive =
+    detail.status === "started" ||
+    detail.status === "running";
+  const allowTerminalReplay =
+    options?.allowTerminalReplay ?? false;
   const needsReplay =
     allowTerminalReplay &&
     useStore.getState().events.length === 0 &&
@@ -117,13 +144,36 @@ function applySessionDetail(
   if (isActive || needsReplay) {
     ensureSubscriptions();
     wsClient.connect(detail.session_id);
+
+    // Handle WebSocket connection failure by clearing stale session.
+    // This can happen if the session exists in the database but the backend
+    // has no in-memory state for it (e.g., after backend restart).
+    const unsubscribeError = wsClient.onStatusChange(
+      (status) => {
+        if (status === "error") {
+          console.warn(
+            "[Session] WebSocket connection failed, clearing stale session",
+            { sessionId: detail.session_id },
+          );
+          clearPersistedSessionId();
+          useStore.getState().resetSession();
+          useStore.getState().setConnectionError(null);
+          unsubscribeError();
+        } else if (status === "connected") {
+          // Connection succeeded, no cleanup needed
+          unsubscribeError();
+        }
+      },
+    );
   }
 }
 
 function sortSessionsByCreatedAt(
-  sessions: SessionSummary[]
+  sessions: SessionSummary[],
 ): SessionSummary[] {
-  return [...sessions].sort((a, b) => b.created_at - a.created_at);
+  return [...sessions].sort(
+    (a, b) => b.created_at - a.created_at,
+  );
 }
 
 async function restoreSessionFromStorage(): Promise<void> {
@@ -138,11 +188,18 @@ async function restoreSessionFromStorage(): Promise<void> {
 
   try {
     const detail = await api.getSession(persistedSessionId);
-    applySessionDetail(detail, { allowTerminalReplay: false });
+    applySessionDetail(detail, {
+      allowTerminalReplay: false,
+    });
   } catch (error) {
     clearPersistedSessionId();
-    if (!(error instanceof ApiError && error.status === 404)) {
-      console.warn("Failed to restore persisted session:", error);
+    if (
+      !(error instanceof ApiError && error.status === 404)
+    ) {
+      console.warn(
+        "Failed to restore persisted session:",
+        error,
+      );
     }
   }
 }
@@ -158,7 +215,10 @@ export interface UseSessionReturn {
   task: string;
   recentSessions: SessionSummary[];
   setMode: (mode: Mode) => void;
-  startSession: (task: string, modelConfig?: ModelConfig) => Promise<void>;
+  startSession: (
+    task: string,
+    modelConfig?: ModelConfig,
+  ) => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
   clearSessions: (force?: boolean) => Promise<void>;
@@ -174,34 +234,52 @@ export interface UseSessionOptions {
  * Hook for managing session lifecycle including creation, cancellation,
  * and WebSocket event streaming.
  */
-export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
+export function useSession(
+  options: UseSessionOptions = {},
+): UseSessionReturn {
   const withSessionList = options.withSessionList ?? false;
   const sessionId = useStore((state) => state.sessionId);
   const status = useStore((state) => state.sessionStatus);
   const mode = useStore((state) => state.mode);
   const task = useStore((state) => state.task);
-  const [recentSessions, setRecentSessions] = useState<SessionSummary[]>([]);
+  const [recentSessions, setRecentSessions] = useState<
+    SessionSummary[]
+  >([]);
 
   const setMode = useStore((state) => state.setMode);
   const setTask = useStore((state) => state.setTask);
-  const storeStartSession = useStore((state) => state.startSession);
-  const storeEndSession = useStore((state) => state.endSession);
-  const storeResetSession = useStore((state) => state.resetSession);
-  const setConnectionError = useStore((state) => state.setConnectionError);
+  const storeStartSession = useStore(
+    (state) => state.startSession,
+  );
+  const storeEndSession = useStore(
+    (state) => state.endSession,
+  );
+  const storeResetSession = useStore(
+    (state) => state.resetSession,
+  );
+  const setConnectionError = useStore(
+    (state) => state.setConnectionError,
+  );
   const isMountedRef = useRef(false);
 
-  const refreshSessions = useCallback(async (): Promise<void> => {
-    if (!withSessionList) {
-      return;
-    }
+  const refreshSessions =
+    useCallback(async (): Promise<void> => {
+      if (!withSessionList) {
+        return;
+      }
 
-    try {
-      const sessions = await api.listSessions(25);
-      setRecentSessions(sortSessionsByCreatedAt(sessions));
-    } catch (error) {
-      console.warn("Failed to refresh session list:", error);
-    }
-  }, [withSessionList]);
+      try {
+        const sessions = await api.listSessions(25);
+        setRecentSessions(
+          sortSessionsByCreatedAt(sessions),
+        );
+      } catch (error) {
+        console.warn(
+          "Failed to refresh session list:",
+          error,
+        );
+      }
+    }, [withSessionList]);
 
   // Initialize one-time restore and clean global subscriptions when last consumer unmounts.
   useEffect(() => {
@@ -211,14 +289,19 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
     }
 
     if (!restoreInFlight) {
-      restoreInFlight = restoreSessionFromStorage().finally(() => {
-        restoreInFlight = null;
-      });
+      restoreInFlight = restoreSessionFromStorage().finally(
+        () => {
+          restoreInFlight = null;
+        },
+      );
     }
 
     return () => {
       if (isMountedRef.current) {
-        mountedConsumers = Math.max(0, mountedConsumers - 1);
+        mountedConsumers = Math.max(
+          0,
+          mountedConsumers - 1,
+        );
         isMountedRef.current = false;
       }
 
@@ -233,18 +316,24 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
   // we wait for events to stop arriving for 500ms (indicating replay is done).
   // This is capped at 10s as a safety net for sessions with many events.
   useEffect(() => {
-    if (status === "complete" || status === "error" || status === "cancelled") {
+    if (
+      status === "complete" ||
+      status === "error" ||
+      status === "cancelled"
+    ) {
       const lastEventTimeRef = { current: Date.now() };
       const IDLE_WINDOW_MS = 500;
       const MAX_WAIT_MS = 10000;
       const CHECK_INTERVAL_MS = 200;
       const startTime = Date.now();
 
-      let previousEventCount = useStore.getState().events.length;
+      let previousEventCount =
+        useStore.getState().events.length;
 
       const checkIdle = (): void => {
         const now = Date.now();
-        const currentEventCount = useStore.getState().events.length;
+        const currentEventCount =
+          useStore.getState().events.length;
 
         // Update last event time if new events arrived
         if (currentEventCount > previousEventCount) {
@@ -252,21 +341,30 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
           previousEventCount = currentEventCount;
         }
 
-        const timeSinceLastEvent = now - lastEventTimeRef.current;
+        const timeSinceLastEvent =
+          now - lastEventTimeRef.current;
         const totalElapsed = now - startTime;
 
         // Disconnect if idle window passed OR max wait reached
-        if (timeSinceLastEvent >= IDLE_WINDOW_MS || totalElapsed >= MAX_WAIT_MS) {
+        if (
+          timeSinceLastEvent >= IDLE_WINDOW_MS ||
+          totalElapsed >= MAX_WAIT_MS
+        ) {
           wsClient.disconnect();
           cleanupSubscriptions();
           return;
         }
 
         // Continue checking
-        timeoutIdRef.current = setTimeout(checkIdle, CHECK_INTERVAL_MS);
+        timeoutIdRef.current = setTimeout(
+          checkIdle,
+          CHECK_INTERVAL_MS,
+        );
       };
 
-      const timeoutIdRef: { current: ReturnType<typeof setTimeout> | null } = {
+      const timeoutIdRef: {
+        current: ReturnType<typeof setTimeout> | null;
+      } = {
         current: setTimeout(checkIdle, CHECK_INTERVAL_MS),
       };
 
@@ -291,7 +389,10 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
    * Creates a new session by default, or continues the existing one when possible.
    */
   const startSession = useCallback(
-    async (taskText: string, modelConfig?: ModelConfig): Promise<void> => {
+    async (
+      taskText: string,
+      modelConfig?: ModelConfig,
+    ): Promise<void> => {
       // Store the task
       setTask(taskText);
 
@@ -305,17 +406,24 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
         if (existingSessionId) {
           let existingSession: SessionDetailResponse;
           try {
-            existingSession = await api.getSession(existingSessionId);
+            existingSession = await api.getSession(
+              existingSessionId,
+            );
           } catch (error) {
-            if (error instanceof ApiError && error.status === 404) {
+            if (
+              error instanceof ApiError &&
+              error.status === 404
+            ) {
               throw new SessionActionRequiredError(
-                "The selected session no longer exists. Click \"New Session\" to start a new one."
+                'The selected session no longer exists. Click "New Session" to start a new one.',
               );
             }
             if (error instanceof Error) {
               throw error;
             }
-            throw new Error("Failed to resolve current session");
+            throw new Error(
+              "Failed to resolve current session",
+            );
           }
 
           if (existingSession.mode !== currentMode) {
@@ -328,32 +436,40 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
             // was deleted.
             clearPersistedSessionId();
           } else {
-            if (ACTIVE_SESSION_STATUSES.includes(existingSession.status)) {
+            if (
+              ACTIVE_SESSION_STATUSES.includes(
+                existingSession.status,
+              )
+            ) {
               throw new SessionActionRequiredError(
-                "The current session is still running. Wait for completion or cancel it before sending another prompt."
+                "The current session is still running. Wait for completion or cancel it before sending another prompt.",
               );
             }
 
             if (existingSession.status === "cancelled") {
               throw new SessionActionRequiredError(
-                "Cancelled sessions cannot be resumed. Click \"New Session\" to start a fresh run."
+                'Cancelled sessions cannot be resumed. Click "New Session" to start a fresh run.',
               );
             }
 
-            shouldContinue = CONTINUABLE_SESSION_STATUSES.includes(
-              existingSession.status
-            );
+            shouldContinue =
+              CONTINUABLE_SESSION_STATUSES.includes(
+                existingSession.status,
+              );
 
             if (!shouldContinue) {
               throw new SessionActionRequiredError(
-                "This session cannot be resumed from its current state. Click \"New Session\" to start a fresh run."
+                'This session cannot be resumed from its current state. Click "New Session" to start a fresh run.',
               );
             }
 
-            const response = await api.continueSession(existingSessionId, {
-              task: taskText,
-              modelConfig,
-            });
+            const response = await api.continueSession(
+              existingSessionId,
+              {
+                task: taskText,
+                modelConfig,
+              },
+            );
 
             // Update store with session ID
             storeStartSession(response.session_id, {
@@ -394,9 +510,13 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
         }
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "Failed to start session";
+          error instanceof Error
+            ? error.message
+            : "Failed to start session";
         setConnectionError(message);
-        if (!(error instanceof SessionActionRequiredError)) {
+        if (
+          !(error instanceof SessionActionRequiredError)
+        ) {
           storeEndSession("error");
         }
         throw error;
@@ -409,7 +529,7 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
       storeEndSession,
       withSessionList,
       refreshSessions,
-    ]
+    ],
   );
 
   const switchSession = useCallback(
@@ -419,62 +539,67 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
       }
 
       const detail = await api.getSession(targetSessionId);
-      applySessionDetail(detail, { allowTerminalReplay: true });
+      applySessionDetail(detail, {
+        allowTerminalReplay: true,
+      });
 
       if (withSessionList) {
         await refreshSessions();
       }
     },
-    [withSessionList, refreshSessions]
+    [withSessionList, refreshSessions],
   );
 
   /**
    * Cancel the current running session.
    * Sends cancel command via both WebSocket and HTTP API.
    */
-  const cancelSession = useCallback(async (): Promise<void> => {
-    if (!sessionId) {
-      return;
-    }
-
-    // Send cancel via WebSocket (for immediate response)
-    wsClient.send({ type: "cancel" });
-
-    // Also send via HTTP API (for reliability)
-    try {
-      await api.cancelSession(sessionId);
-    } catch (error) {
-      // Ignore already-terminal responses, surface other failures.
-      if (
-        error instanceof ApiError &&
-        (error.status === 400 || error.status === 404)
-      ) {
-        // Session was already terminal or unavailable.
-      } else {
-        const message =
-          error instanceof Error ? error.message : "Failed to cancel session";
-        setConnectionError(message);
+  const cancelSession =
+    useCallback(async (): Promise<void> => {
+      if (!sessionId) {
+        return;
       }
-    }
 
-    // Update session status
-    storeEndSession("cancelled");
+      // Send cancel via WebSocket (for immediate response)
+      wsClient.send({ type: "cancel" });
 
-    // Disconnect WebSocket
-    wsClient.disconnect();
+      // Also send via HTTP API (for reliability)
+      try {
+        await api.cancelSession(sessionId);
+      } catch (error) {
+        // Ignore already-terminal responses, surface other failures.
+        if (
+          error instanceof ApiError &&
+          (error.status === 400 || error.status === 404)
+        ) {
+          // Session was already terminal or unavailable.
+        } else {
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to cancel session";
+          setConnectionError(message);
+        }
+      }
 
-    cleanupSubscriptions();
+      // Update session status
+      storeEndSession("cancelled");
 
-    if (withSessionList) {
-      void refreshSessions();
-    }
-  }, [
-    sessionId,
-    storeEndSession,
-    setConnectionError,
-    withSessionList,
-    refreshSessions,
-  ]);
+      // Disconnect WebSocket
+      wsClient.disconnect();
+
+      cleanupSubscriptions();
+
+      if (withSessionList) {
+        void refreshSessions();
+      }
+    }, [
+      sessionId,
+      storeEndSession,
+      setConnectionError,
+      withSessionList,
+      refreshSessions,
+    ]);
 
   const clearSessions = useCallback(
     async (force: boolean = true): Promise<void> => {
@@ -487,7 +612,7 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
         await refreshSessions();
       }
     },
-    [storeResetSession, withSessionList, refreshSessions]
+    [storeResetSession, withSessionList, refreshSessions],
   );
 
   /**
@@ -507,7 +632,8 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
     }
   }, [storeResetSession, withSessionList, refreshSessions]);
 
-  const isRunning = status === "started" || status === "running";
+  const isRunning =
+    status === "started" || status === "running";
 
   return {
     sessionId,
