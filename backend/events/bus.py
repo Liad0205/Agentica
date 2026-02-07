@@ -275,16 +275,17 @@ class EventBus:
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(queue.put_nowait, event)
         else:
-            # Fallback: no loop available yet, try direct put
-            for queue in subscribers:
-                try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    logger.warning(
-                        "queue_full_event_dropped",
-                        session_id=event.session_id,
-                        event_type=event.type.value,
-                    )
+            # No running event loop — buffer the event instead of calling
+            # put_nowait directly (which is NOT thread-safe on asyncio.Queue).
+            # Events will be delivered when a subscriber connects via the
+            # buffer replay mechanism.
+            with self._lock:
+                self._event_buffer[event.session_id].append(event)
+            logger.debug(
+                "event_buffered_no_loop",
+                session_id=event.session_id,
+                event_type=event.type.value,
+            )
 
         logger.debug(
             "event_published_sync",

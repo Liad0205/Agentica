@@ -241,7 +241,7 @@ class SessionManager:
         if self.metrics_collector is None:
             return
         try:
-            final_metrics = self.metrics_collector.finish(session_id)
+            final_metrics = await self.metrics_collector.finish(session_id)
             if final_metrics is not None and self.session_store is not None:
                 await self.session_store.save_metrics(
                     session_id, final_metrics.to_dict()
@@ -441,7 +441,7 @@ class SessionManager:
 
         # Start metrics tracking
         if self.metrics_collector is not None:
-            self.metrics_collector.start(session_id)
+            await self.metrics_collector.start(session_id)
 
         try:
             # Create sandbox (hypothesis mode creates per-solver sandboxes
@@ -650,7 +650,7 @@ class SessionManager:
 
         # Start metrics tracking for the follow-up run.
         if self.metrics_collector is not None:
-            self.metrics_collector.start(session_id)
+            await self.metrics_collector.start(session_id)
 
         await self.event_bus.publish(
             AgentEvent(

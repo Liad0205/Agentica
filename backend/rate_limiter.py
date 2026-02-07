@@ -13,6 +13,7 @@ Usage:
 """
 
 import asyncio
+import threading
 import time
 from collections import deque
 
@@ -169,7 +170,7 @@ class RateLimiter:
         # Ensure we wait at least a small amount to avoid busy loops
         return max(wait, 0.1)
 
-    def record_usage(self, tokens_used: int) -> None:
+    async def record_usage(self, tokens_used: int) -> None:
         """Record the actual token usage after a completed LLM call.
 
         Adjusts the most recent entry in the sliding window from the
@@ -179,33 +180,35 @@ class RateLimiter:
         Args:
             tokens_used: The actual number of tokens consumed by the call.
         """
-        if not self._call_log:
-            return
+        async with self._lock:
+            if not self._call_log:
+                return
 
-        # Replace the most recent entry's estimated tokens with actual usage
-        timestamp, _estimated = self._call_log[-1]
-        self._call_log[-1] = (timestamp, tokens_used)
+            # Replace the most recent entry's estimated tokens with actual usage
+            timestamp, _estimated = self._call_log[-1]
+            self._call_log[-1] = (timestamp, tokens_used)
 
-        logger.debug(
-            "rate_limiter_usage_recorded",
-            tokens_used=tokens_used,
-            current_tpm=self._current_tpm(),
-        )
+            logger.debug(
+                "rate_limiter_usage_recorded",
+                tokens_used=tokens_used,
+                current_tpm=self._current_tpm(),
+            )
 
-    def get_status(self) -> dict[str, object]:
+    async def get_status(self) -> dict[str, object]:
         """Return current rate limiter status for diagnostics.
 
         Returns:
             Dictionary with current RPM, TPM, and configured limits.
         """
-        now = time.monotonic()
-        self._prune_old_entries(now)
-        return {
-            "current_rpm": self._current_rpm(),
-            "current_tpm": self._current_tpm(),
-            "max_rpm": self.max_calls_per_minute,
-            "max_tpm": self.max_tokens_per_minute,
-        }
+        async with self._lock:
+            now = time.monotonic()
+            self._prune_old_entries(now)
+            return {
+                "current_rpm": self._current_rpm(),
+                "current_tpm": self._current_tpm(),
+                "max_rpm": self.max_calls_per_minute,
+                "max_tpm": self.max_tokens_per_minute,
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -213,22 +216,26 @@ class RateLimiter:
 # ---------------------------------------------------------------------------
 
 _rate_limiter: RateLimiter | None = None
+_rate_limiter_lock = threading.Lock()
 
 
 def get_rate_limiter() -> RateLimiter:
     """Get the global RateLimiter singleton.
 
     The singleton is created on first call using values from ``config.settings``.
+    Uses double-checked locking for thread safety.
 
     Returns:
         The global RateLimiter instance.
     """
     global _rate_limiter
     if _rate_limiter is None:
-        _rate_limiter = RateLimiter(
-            max_calls_per_minute=settings.llm_rate_limit_rpm,
-            max_tokens_per_minute=settings.llm_rate_limit_tpm,
-        )
+        with _rate_limiter_lock:
+            if _rate_limiter is None:
+                _rate_limiter = RateLimiter(
+                    max_calls_per_minute=settings.llm_rate_limit_rpm,
+                    max_tokens_per_minute=settings.llm_rate_limit_tpm,
+                )
     return _rate_limiter
 
 

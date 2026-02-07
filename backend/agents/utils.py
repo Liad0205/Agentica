@@ -320,7 +320,7 @@ class LLMClient:
                     llm_response.metrics.input_tokens
                     + llm_response.metrics.output_tokens
                 )
-                self.rate_limiter.record_usage(actual_tokens)
+                await self.rate_limiter.record_usage(actual_tokens)
 
                 # Emit metrics event if we have an event bus and session
                 if self.event_bus and session_id:
@@ -332,7 +332,7 @@ class LLMClient:
 
                 # Record in session-level metrics collector
                 if self.metrics_collector and session_id:
-                    self.metrics_collector.record_llm_call(
+                    await self.metrics_collector.record_llm_call(
                         session_id,
                         prompt_tokens=llm_response.metrics.input_tokens,
                         completion_tokens=llm_response.metrics.output_tokens,
@@ -438,7 +438,7 @@ class LLMClient:
                     llm_response.metrics.input_tokens
                     + llm_response.metrics.output_tokens
                 )
-                self.rate_limiter.record_usage(actual_tokens)
+                await self.rate_limiter.record_usage(actual_tokens)
 
                 # Emit metrics
                 if self.event_bus and session_id:
@@ -450,7 +450,7 @@ class LLMClient:
 
                 # Record in session-level metrics collector
                 if self.metrics_collector and session_id:
-                    self.metrics_collector.record_llm_call(
+                    await self.metrics_collector.record_llm_call(
                         session_id,
                         prompt_tokens=llm_response.metrics.input_tokens,
                         completion_tokens=llm_response.metrics.output_tokens,

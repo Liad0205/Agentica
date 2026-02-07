@@ -827,6 +827,13 @@ class HypothesisGraph:
                     agent_id=agent_id,
                 )
 
+            # Best-effort sandbox cleanup on failure to prevent leaks.
+            # The sandbox may not exist yet if creation itself failed.
+            try:
+                await self.sandbox_manager.destroy_sandbox(sandbox_id)
+            except Exception:
+                pass
+
             return {
                 "hypothesis_results": [
                     HypothesisResult(

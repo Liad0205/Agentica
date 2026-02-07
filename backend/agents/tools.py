@@ -395,7 +395,7 @@ class ToolExecutor:
         )
 
         if self.metrics_collector is not None:
-            self.metrics_collector.record_tool_call(session_id)
+            await self.metrics_collector.record_tool_call(session_id)
 
         try:
             normalized_args = self._normalize_tool_args(tool_name, args)

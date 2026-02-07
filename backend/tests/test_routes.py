@@ -21,7 +21,7 @@ from sandbox.docker_sandbox import FileInfo
 
 
 def _make_session_info(
-    session_id: str = "sess_test123456",
+    session_id: str = "sess_aabb11223344",
     mode: str = "react",
     task: str = "Build a todo app with React",
     status: SessionStatus = SessionStatus.RUNNING,
@@ -51,8 +51,8 @@ def _make_session_info(
 def mock_session_manager() -> MagicMock:
     """Create a mock SessionManager."""
     mgr = MagicMock()
-    mgr.create_session = AsyncMock(return_value="sess_test123456")
-    mgr.continue_session = AsyncMock(return_value="sess_test123456")
+    mgr.create_session = AsyncMock(return_value="sess_aabb11223344")
+    mgr.continue_session = AsyncMock(return_value="sess_aabb11223344")
     mgr.get_session = MagicMock(return_value=_make_session_info())
     mgr.get_all_sessions = MagicMock(return_value=[_make_session_info()])
     mgr.get_session_metrics = MagicMock(return_value=SessionMetrics(
@@ -119,8 +119,8 @@ class TestCreateSession:
         )
         assert resp.status_code == 201
         data = resp.json()
-        assert data["session_id"] == "sess_test123456"
-        assert data["websocket_url"] == "/ws/sess_test123456"
+        assert data["session_id"] == "sess_aabb11223344"
+        assert data["websocket_url"] == "/ws/sess_aabb11223344"
 
     def test_create_session_with_llm_config(
         self, client: TestClient, mock_session_manager: MagicMock
@@ -167,7 +167,8 @@ class TestCreateSession:
             },
         )
         assert resp.status_code == 500
-        assert "Docker not available" in resp.json()["detail"]
+        # Error detail should be generic (no internal info leakage)
+        assert resp.json()["detail"] == "Failed to create session"
 
 
 # =========================================================================
@@ -239,13 +240,13 @@ class TestContinueSession:
         )
 
         resp = client.post(
-            "/api/sessions/sess_test123456/continue",
+            "/api/sessions/sess_aabb11223344/continue",
             json={"task": "Now add persistence and filtering."},
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["session_id"] == "sess_test123456"
-        assert data["websocket_url"] == "/ws/sess_test123456"
+        assert data["session_id"] == "sess_aabb11223344"
+        assert data["websocket_url"] == "/ws/sess_aabb11223344"
         mock_session_manager.continue_session.assert_awaited_once()
 
     def test_continue_session_not_found(
@@ -253,11 +254,11 @@ class TestContinueSession:
     ) -> None:
         # SessionManager raises KeyError when session is not found
         mock_session_manager.continue_session = AsyncMock(
-            side_effect=KeyError("Session 'sess_missing' not found")
+            side_effect=KeyError("Session 'sess_111111111111' not found")
         )
 
         resp = client.post(
-            "/api/sessions/sess_missing/continue",
+            "/api/sessions/sess_111111111111/continue",
             json={"task": "Add tests for edge cases in forms."},
         )
         assert resp.status_code == 404
@@ -268,7 +269,7 @@ class TestContinueSession:
         # SessionManager raises RuntimeError with specific message for stale sessions
         mock_session_manager.continue_session = AsyncMock(
             side_effect=RuntimeError(
-                "Session 'sess_test123456' exists in history but cannot be "
+                "Session 'sess_aabb11223344' exists in history but cannot be "
                 "continued because the server was restarted and the "
                 "sandbox environment is no longer available. "
                 "Please start a new session."
@@ -276,7 +277,7 @@ class TestContinueSession:
         )
 
         resp = client.post(
-            "/api/sessions/sess_test123456/continue",
+            "/api/sessions/sess_aabb11223344/continue",
             json={"task": "Follow up on previous work."},
         )
         assert resp.status_code == 410  # HTTP Gone
@@ -290,7 +291,7 @@ class TestContinueSession:
         )
 
         resp = client.post(
-            "/api/sessions/sess_test123456/continue",
+            "/api/sessions/sess_aabb11223344/continue",
             json={"task": "Apply follow-up improvements to the UI."},
         )
         assert resp.status_code == 400
@@ -306,10 +307,10 @@ class TestGetSession:
     """GET /api/sessions/{session_id}."""
 
     def test_get_session_success(self, client: TestClient) -> None:
-        resp = client.get("/api/sessions/sess_test123456")
+        resp = client.get("/api/sessions/sess_aabb11223344")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["session_id"] == "sess_test123456"
+        assert data["session_id"] == "sess_aabb11223344"
         assert data["mode"] == "react"
         assert data["status"] == "running"
 
@@ -317,7 +318,7 @@ class TestGetSession:
         self, client: TestClient, mock_session_manager: MagicMock
     ) -> None:
         mock_session_manager.get_session.return_value = None
-        resp = client.get("/api/sessions/sess_nonexistent")
+        resp = client.get("/api/sessions/sess_000000000000")
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]
 
@@ -327,7 +328,7 @@ class TestGetSession:
         mock_session_manager.get_session.return_value = None
         store = MagicMock()
         store.get_session = AsyncMock(return_value={
-            "id": "sess_db123",
+            "id": "sess_ddbb00112300",
             "mode": "decomposition",
             "task": "Persisted task",
             "status": "running",
@@ -338,10 +339,10 @@ class TestGetSession:
         })
         mock_session_manager.session_store = store
 
-        resp = client.get("/api/sessions/sess_db123")
+        resp = client.get("/api/sessions/sess_ddbb00112300")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["session_id"] == "sess_db123"
+        assert data["session_id"] == "sess_ddbb00112300"
         assert data["mode"] == "decomposition"
         assert data["task"] == "Persisted task"
         assert data["status"] == "running"
@@ -374,7 +375,7 @@ class TestListSessions:
         store = MagicMock()
         store.list_sessions = AsyncMock(return_value=[
             {
-                "id": "sess_db0001",
+                "id": "sess_ddbb00000001",
                 "mode": "react",
                 "task": "Persisted task one",
                 "status": "complete",
@@ -396,7 +397,7 @@ class TestListSessions:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["session_id"] == "sess_db0001"
+        assert data[0]["session_id"] == "sess_ddbb00000001"
         assert data[0]["status"] == "complete"
         assert data[0]["metrics"]["total_input_tokens"] == 120
         assert data[0]["metrics"]["total_output_tokens"] == 80
@@ -417,7 +418,7 @@ class TestCancelSession:
         mock_session_manager.get_session.return_value = _make_session_info(
             status=SessionStatus.RUNNING
         )
-        resp = client.post("/api/sessions/sess_test123456/cancel")
+        resp = client.post("/api/sessions/sess_aabb11223344/cancel")
         assert resp.status_code == 200
         assert "cancelled" in resp.json()["message"]
 
@@ -425,7 +426,7 @@ class TestCancelSession:
         self, client: TestClient, mock_session_manager: MagicMock
     ) -> None:
         mock_session_manager.get_session.return_value = None
-        resp = client.post("/api/sessions/sess_nonexistent/cancel")
+        resp = client.post("/api/sessions/sess_000000000000/cancel")
         assert resp.status_code == 404
 
     def test_cancel_already_complete(
@@ -434,7 +435,7 @@ class TestCancelSession:
         mock_session_manager.get_session.return_value = _make_session_info(
             status=SessionStatus.COMPLETE
         )
-        resp = client.post("/api/sessions/sess_test123456/cancel")
+        resp = client.post("/api/sessions/sess_aabb11223344/cancel")
         assert resp.status_code == 400
         assert "already" in resp.json()["detail"]
 
@@ -444,7 +445,7 @@ class TestCancelSession:
         mock_session_manager.get_session.return_value = _make_session_info(
             status=SessionStatus.ERROR
         )
-        resp = client.post("/api/sessions/sess_test123456/cancel")
+        resp = client.post("/api/sessions/sess_aabb11223344/cancel")
         assert resp.status_code == 400
 
     def test_cancel_already_cancelled(
@@ -453,7 +454,7 @@ class TestCancelSession:
         mock_session_manager.get_session.return_value = _make_session_info(
             status=SessionStatus.CANCELLED
         )
-        resp = client.post("/api/sessions/sess_test123456/cancel")
+        resp = client.post("/api/sessions/sess_aabb11223344/cancel")
         assert resp.status_code == 400
 
 
@@ -466,7 +467,7 @@ class TestGetSessionMetrics:
     """GET /api/sessions/{session_id}/metrics."""
 
     def test_get_metrics_success(self, client: TestClient) -> None:
-        resp = client.get("/api/sessions/sess_test123456/metrics")
+        resp = client.get("/api/sessions/sess_aabb11223344/metrics")
         assert resp.status_code == 200
         data = resp.json()
         assert "total_input_tokens" in data
@@ -476,7 +477,7 @@ class TestGetSessionMetrics:
         self, client: TestClient, mock_session_manager: MagicMock
     ) -> None:
         mock_session_manager.get_session_metrics.return_value = None
-        resp = client.get("/api/sessions/sess_nonexistent/metrics")
+        resp = client.get("/api/sessions/sess_000000000000/metrics")
         assert resp.status_code == 404
 
     def test_get_metrics_falls_back_to_persisted_store(
@@ -485,7 +486,7 @@ class TestGetSessionMetrics:
         mock_session_manager.get_session_metrics.return_value = None
         store = MagicMock()
         store.get_session = AsyncMock(return_value={
-            "id": "sess_db_metrics",
+            "id": "sess_ddbb00112233",
             "status": "complete",
             "created_at": 1700000000.0,
             "updated_at": 1700000200.0,
@@ -499,7 +500,7 @@ class TestGetSessionMetrics:
         })
         mock_session_manager.session_store = store
 
-        resp = client.get("/api/sessions/sess_db_metrics/metrics")
+        resp = client.get("/api/sessions/sess_ddbb00112233/metrics")
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_input_tokens"] == 40
@@ -518,7 +519,7 @@ class TestGetFiles:
     """GET /api/sessions/{session_id}/files."""
 
     def test_get_files_success(self, client: TestClient) -> None:
-        resp = client.get("/api/sessions/sess_test123456/files")
+        resp = client.get("/api/sessions/sess_aabb11223344/files")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
@@ -529,11 +530,11 @@ class TestGetFiles:
         self, client: TestClient, mock_session_manager: MagicMock
     ) -> None:
         mock_session_manager.get_session.return_value = None
-        resp = client.get("/api/sessions/sess_nonexistent/files")
+        resp = client.get("/api/sessions/sess_000000000000/files")
         assert resp.status_code == 404
 
     def test_get_files_path_traversal_blocked(self, client: TestClient) -> None:
-        resp = client.get("/api/sessions/sess_test123456/files?path=../etc")
+        resp = client.get("/api/sessions/sess_aabb11223344/files?path=../etc")
         assert resp.status_code == 400
         assert "traversal" in resp.json()["detail"].lower()
 
@@ -548,7 +549,7 @@ class TestGetFileContent:
 
     def test_get_file_content_success(self, client: TestClient) -> None:
         resp = client.get(
-            "/api/sessions/sess_test123456/files/content?path=src/App.tsx"
+            "/api/sessions/sess_aabb11223344/files/content?path=src/App.tsx"
         )
         assert resp.status_code == 200
         assert "export default" in resp.text
@@ -558,13 +559,13 @@ class TestGetFileContent:
     ) -> None:
         mock_session_manager.get_session.return_value = None
         resp = client.get(
-            "/api/sessions/sess_nonexistent/files/content?path=a.txt"
+            "/api/sessions/sess_000000000000/files/content?path=a.txt"
         )
         assert resp.status_code == 404
 
     def test_get_file_content_path_traversal(self, client: TestClient) -> None:
         resp = client.get(
-            "/api/sessions/sess_test123456/files/content?path=../../etc/passwd"
+            "/api/sessions/sess_aabb11223344/files/content?path=../../etc/passwd"
         )
         assert resp.status_code == 400
 
@@ -575,7 +576,7 @@ class TestGetFileContent:
             side_effect=FileNotFoundError("File not found")
         )
         resp = client.get(
-            "/api/sessions/sess_test123456/files/content?path=nonexistent.ts"
+            "/api/sessions/sess_aabb11223344/files/content?path=nonexistent.ts"
         )
         assert resp.status_code == 404
 
@@ -589,7 +590,7 @@ class TestDownloadFilesArchive:
     """GET /api/sessions/{session_id}/files/archive."""
 
     def test_download_archive_success(self, client: TestClient) -> None:
-        resp = client.get("/api/sessions/sess_test123456/files/archive")
+        resp = client.get("/api/sessions/sess_aabb11223344/files/archive")
         assert resp.status_code == 200
         assert resp.content == b"fake-tar-content"
         assert resp.headers["content-type"].startswith("application/x-tar")
@@ -600,11 +601,11 @@ class TestDownloadFilesArchive:
         self, client: TestClient, mock_session_manager: MagicMock
     ) -> None:
         mock_session_manager.get_session.return_value = None
-        resp = client.get("/api/sessions/sess_nonexistent/files/archive")
+        resp = client.get("/api/sessions/sess_000000000000/files/archive")
         assert resp.status_code == 404
 
     def test_download_archive_path_traversal_blocked(self, client: TestClient) -> None:
-        resp = client.get("/api/sessions/sess_test123456/files/archive?path=../etc")
+        resp = client.get("/api/sessions/sess_aabb11223344/files/archive?path=../etc")
         assert resp.status_code == 400
         assert "traversal" in resp.json()["detail"].lower()
 
@@ -615,7 +616,7 @@ class TestDownloadFilesArchive:
             side_effect=FileNotFoundError("Path not found")
         )
         resp = client.get(
-            "/api/sessions/sess_test123456/files/archive?path=missing-dir"
+            "/api/sessions/sess_aabb11223344/files/archive?path=missing-dir"
         )
         assert resp.status_code == 404
 
@@ -635,6 +636,6 @@ class TestSessionManagerNotConfigured:
         set_session_manager(None)  # type: ignore[arg-type]
 
         with TestClient(app, raise_server_exceptions=False) as c:
-            resp = c.get("/api/sessions/sess_test")
+            resp = c.get("/api/sessions/sess_aabb11223344")
             # Should get 500 or a runtime error
             assert resp.status_code == 500

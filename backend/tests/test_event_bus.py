@@ -229,14 +229,16 @@ class TestPublishSync:
         queue = event_bus.subscribe("sess_1")
         assert not queue.empty()
 
-    async def test_publish_sync_no_loop_fallback(self, event_bus: EventBus) -> None:
-        """When no event loop is cached, publish_sync falls back to put_nowait."""
-        queue = event_bus.subscribe("sess_1")
+    async def test_publish_sync_no_loop_buffers_event(self, event_bus: EventBus) -> None:
+        """When no event loop is cached, publish_sync buffers events safely."""
         event_bus._loop = None  # No loop available
 
         event = _make_event("sess_1")
         event_bus.publish_sync(event)
 
+        # Event should be buffered, not put directly on queue (thread-unsafe).
+        # Subscribing should deliver the buffered event.
+        queue = event_bus.subscribe("sess_1")
         assert not queue.empty()
         received = queue.get_nowait()
         assert received.type == EventType.AGENT_SPAWNED

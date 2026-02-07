@@ -206,7 +206,7 @@ async def create_session(request: CreateSessionRequest) -> SessionResponse:
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create session: {e}",
+            detail="Failed to create session",
         ) from e
 
 
@@ -221,7 +221,7 @@ async def create_session(request: CreateSessionRequest) -> SessionResponse:
     ),
 )
 async def continue_session(
-    session_id: Annotated[str, Path(description="The session ID")],
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")],
     request: ContinueSessionRequest,
 ) -> SessionResponse:
     """Continue an existing session with a follow-up task."""
@@ -270,7 +270,7 @@ async def continue_session(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to continue session: {e}",
+            detail="Failed to continue session",
         ) from e
 
     updated = session_manager.get_session(continued_session_id)
@@ -405,7 +405,7 @@ async def clear_sessions(
         logger.error("clear_sessions_cleanup_failed", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to clear sessions: {e}",
+            detail="Failed to clear sessions",
         ) from e
 
     persisted_deleted = 0
@@ -437,7 +437,7 @@ async def clear_sessions(
     description="Get current session state including status and configuration.",
 )
 async def get_session(
-    session_id: Annotated[str, Path(description="The session ID")]
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")]
 ) -> SessionDetailResponse:
     """Get current session state including all events so far.
 
@@ -513,7 +513,7 @@ async def get_session(
     description="Cancel a running session and clean up resources.",
 )
 async def cancel_session(
-    session_id: Annotated[str, Path(description="The session ID")]
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")]
 ) -> dict[str, str]:
     """Cancel a running session.
 
@@ -562,7 +562,7 @@ async def cancel_session(
     description="Get the current file tree for a sandbox in the session.",
 )
 async def get_files(
-    session_id: Annotated[str, Path(description="The session ID")],
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")],
     sandbox_id: Annotated[str, Query(description="Sandbox ID to query")] = "primary",
     path: Annotated[str, Query(description="Directory path to list")] = ".",
 ) -> list[FileInfo]:
@@ -639,7 +639,7 @@ async def get_files(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list files: {e}",
+            detail="Failed to list files",
         ) from e
 
     return [
@@ -661,7 +661,7 @@ async def get_files(
     description="Get the content of a specific file in a sandbox.",
 )
 async def get_file_content(
-    session_id: Annotated[str, Path(description="The session ID")],
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")],
     path: Annotated[str, Query(description="File path relative to workspace")],
     sandbox_id: Annotated[str, Query(description="Sandbox ID to query")] = "primary",
 ) -> str:
@@ -752,7 +752,7 @@ async def get_file_content(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to read file: {e}",
+            detail="Failed to read file",
         ) from e
 
 
@@ -763,7 +763,7 @@ async def get_file_content(
     description="Write content to a file in a sandbox workspace.",
 )
 async def put_file_content(
-    session_id: Annotated[str, Path(description="The session ID")],
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")],
     path: Annotated[str, Query(description="File path relative to workspace")],
     content: Annotated[str, Body(media_type="text/plain")],
     sandbox_id: Annotated[str, Query(description="Sandbox ID to target")] = "primary",
@@ -829,7 +829,7 @@ async def put_file_content(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to write file: {e}",
+            detail="Failed to write file",
         ) from e
 
     return {"message": "File saved", "path": path}
@@ -842,7 +842,7 @@ async def put_file_content(
     description="Download a tar archive of files from a sandbox workspace path.",
 )
 async def download_files_archive(
-    session_id: Annotated[str, Path(description="The session ID")],
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")],
     sandbox_id: Annotated[str, Query(description="Sandbox ID to query")] = "primary",
     path: Annotated[str, Query(description="Directory path to archive")] = ".",
 ) -> Response:
@@ -912,7 +912,7 @@ async def download_files_archive(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to export archive: {e}",
+            detail="Failed to export archive",
         ) from e
 
     # Determine filename
@@ -936,7 +936,7 @@ async def download_files_archive(
     description="Start or stop the dev server in a sandbox.",
 )
 async def manage_dev_server(
-    session_id: Annotated[str, Path(description="The session ID")],
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")],
     action: Annotated[str, Query(description="Action to perform: 'start' or 'stop'")],
     sandbox_id: Annotated[str, Query(description="Sandbox ID to target")] = "primary",
 ) -> dict[str, object]:
@@ -978,7 +978,7 @@ async def manage_dev_server(
             logger.error("dev_server_start_failed", error=str(e))
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to start dev server: {e}",
+                detail="Failed to start dev server",
             ) from e
 
     elif action == "stop":
@@ -992,7 +992,7 @@ async def manage_dev_server(
             logger.error("dev_server_stop_failed", error=str(e))
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to stop dev server: {e}",
+                detail="Failed to stop dev server",
             ) from e
 
     else:
@@ -1009,7 +1009,7 @@ async def manage_dev_server(
     description="Get token usage and execution metrics for a session.",
 )
 async def get_session_metrics(
-    session_id: Annotated[str, Path(description="The session ID")]
+    session_id: Annotated[str, Path(description="The session ID", pattern=r"^sess_[a-f0-9]{12}$")]
 ) -> SessionMetrics:
     """Get token usage and execution metrics for a session.
 

@@ -425,11 +425,14 @@ class SandboxManager:
         if not is_valid:
             raise ValueError(error_msg)
 
-        files = await asyncio.get_running_loop().run_in_executor(
-            None,
-            self._list_files_in_container,
-            sandbox_info.container_id,
-            path,
+        files = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                None,
+                self._list_files_in_container,
+                sandbox_info.container_id,
+                path,
+            ),
+            timeout=30,
         )
 
         return files
@@ -849,11 +852,14 @@ fi >/tmp/devserver.log 2>&1 &
         """
         sandbox_info = self._get_sandbox(sandbox_id)
 
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
-            self._stop_dev_server_in_container,
-            sandbox_info.container_id,
-            sandbox_info.port,
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                None,
+                self._stop_dev_server_in_container,
+                sandbox_info.container_id,
+                sandbox_info.port,
+            ),
+            timeout=30,
         )
 
     def _stop_dev_server_in_container(self, container_id: str, port: int) -> bool:

@@ -21,6 +21,7 @@ Events emitted:
 import asyncio
 import json
 import operator
+import re
 import time
 from typing import Annotated, Any, Literal, TypedDict
 from uuid import uuid4
@@ -452,9 +453,19 @@ class DecompositionGraph:
             return remaining
         return min(default_timeout, remaining)
 
-    @staticmethod
-    def _normalize_npm_dependency_list(raw_dependencies: Any) -> list[str]:
-        """Normalize orchestrator-provided dependency names."""
+    # Valid npm package name: optional @scope/, then package name, optional @version.
+    # Rejects shell metacharacters, spaces, and injection attempts.
+    _NPM_DEP_RE = re.compile(
+        r"^(@[a-z0-9\-~][a-z0-9\-._~]*/)?[a-z0-9\-~][a-z0-9\-._~]*(@[^\s;|&`$]+)?$"
+    )
+
+    @classmethod
+    def _normalize_npm_dependency_list(cls, raw_dependencies: Any) -> list[str]:
+        """Normalize and validate orchestrator-provided dependency names.
+
+        Rejects dependency strings that don't match a strict npm package name
+        pattern to prevent shell injection via crafted names.
+        """
         if not isinstance(raw_dependencies, list):
             return []
 
@@ -465,6 +476,12 @@ class DecompositionGraph:
                 continue
             dep = item.strip()
             if not dep or dep in seen:
+                continue
+            if not cls._NPM_DEP_RE.match(dep):
+                logger.warning(
+                    "skipping_invalid_npm_dependency",
+                    dependency=dep[:100],
+                )
                 continue
             seen.add(dep)
             normalized.append(dep)

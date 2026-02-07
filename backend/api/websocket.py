@@ -6,6 +6,7 @@ and receiving commands (like cancel) from clients.
 
 import asyncio
 import contextlib
+import re
 from typing import TYPE_CHECKING
 
 import structlog
@@ -52,6 +53,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
         websocket: The WebSocket connection.
         session_id: The session ID to stream events for.
     """
+    # Validate session_id format before accepting
+    if not re.match(r"^sess_[a-f0-9]{12}$", session_id):
+        await websocket.close(code=4400, reason="Invalid session ID format")
+        return
+
+    # Validate session exists before accepting to prevent orphaned subscriptions
+    session_manager = get_session_manager()
+    if session_manager.get_session(session_id) is None:
+        await websocket.close(code=4404, reason="Session not found")
+        return
+
     await websocket.accept()
 
     logger.info("websocket_connected", session_id=session_id)
