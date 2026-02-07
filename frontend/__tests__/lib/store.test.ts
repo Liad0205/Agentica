@@ -735,12 +735,53 @@ describe("selectSandbox", () => {
     expect(useStore.getState().selectedSandboxId).toBe("sandbox-42");
   });
 
+  it("updates previewUrl to the selected sandbox preview", () => {
+    useStore.setState({
+      previewUrl: "http://localhost:3000/",
+      sandboxes: [
+        {
+          id: "sandbox-1",
+          containerId: "container-1",
+          port: 3000,
+          workspacePath: "/workspace",
+          previewUrl: "http://localhost:5173/",
+        },
+      ],
+    });
+
+    useStore.getState().selectSandbox("sandbox-1");
+
+    expect(useStore.getState().previewUrl).toBe("http://localhost:5173/");
+  });
+
+  it("clears previewUrl when selected sandbox has no preview", () => {
+    useStore.setState({
+      previewUrl: "http://localhost:3000/",
+      sandboxes: [
+        {
+          id: "sandbox-2",
+          containerId: "container-2",
+          port: 5174,
+          workspacePath: "/workspace",
+        },
+      ],
+    });
+
+    useStore.getState().selectSandbox("sandbox-2");
+
+    expect(useStore.getState().previewUrl).toBeNull();
+  });
+
   it("clears selectedSandboxId when called with null", () => {
-    useStore.setState({ selectedSandboxId: "sandbox-42" });
+    useStore.setState({
+      selectedSandboxId: "sandbox-42",
+      previewUrl: "http://localhost:5173/",
+    });
 
     useStore.getState().selectSandbox(null);
 
     expect(useStore.getState().selectedSandboxId).toBeNull();
+    expect(useStore.getState().previewUrl).toBeNull();
   });
 });
 

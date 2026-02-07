@@ -416,6 +416,28 @@ function settleActiveAgents(
   };
 }
 
+function isSameEvent(
+  previous: AgentEvent | undefined,
+  current: AgentEvent
+): boolean {
+  if (!previous) {
+    return false;
+  }
+
+  if (
+    previous.type !== current.type ||
+    previous.timestamp !== current.timestamp ||
+    previous.agent_id !== current.agent_id ||
+    previous.agent_role !== current.agent_role ||
+    previous.session_id !== current.session_id
+  ) {
+    return false;
+  }
+
+  // Replayed events from the backend should be byte-for-byte equivalent payloads.
+  return JSON.stringify(previous.data) === JSON.stringify(current.data);
+}
+
 /**
  * Combined store type
  */
@@ -883,16 +905,10 @@ export const useStore = create<AppStore>((set, get) => ({
   addEvent: (event: AgentEvent): void => {
     set((state) => {
       const MAX_EVENTS = 2000;
-      // Skip duplicate events (e.g. from event replay after reconnect).
-      // Events are uniquely identified by their type + timestamp + agent_id
-      // combination which is extremely unlikely to collide for distinct events.
       const lastEvents = state.events;
-      if (
-        lastEvents.length > 0 &&
-        lastEvents[lastEvents.length - 1]?.timestamp === event.timestamp &&
-        lastEvents[lastEvents.length - 1]?.type === event.type &&
-        lastEvents[lastEvents.length - 1]?.agent_id === event.agent_id
-      ) {
+      // Skip duplicate events (e.g. from event replay after reconnect).
+      // Only suppress when the full event identity and payload match.
+      if (isSameEvent(lastEvents[lastEvents.length - 1], event)) {
         return state;
       }
       const events = [...lastEvents, event];
@@ -996,7 +1012,7 @@ export const useStore = create<AppStore>((set, get) => ({
         : undefined;
       return {
         selectedSandboxId: sandboxId,
-        previewUrl: sandbox?.previewUrl ?? state.previewUrl,
+        previewUrl: sandbox?.previewUrl ?? null,
       };
     });
   },
