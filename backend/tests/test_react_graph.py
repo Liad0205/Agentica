@@ -183,10 +183,16 @@ class TestReactGraphExecution:
         # After NEEDS_REVISION review, graph injects a user handoff so the
         # next reason step has an actionable user turn.
         second_reason_messages = mock_llm.call_history[2]["messages"]
-        assert second_reason_messages[-1]["role"] == "user"
-        assert "Continue implementing now based on the review above" in str(
-            second_reason_messages[-1]["content"]
-        )
+        last_message = second_reason_messages[-1]
+        if isinstance(last_message, dict):
+            role = str(last_message.get("role", ""))
+            content = str(last_message.get("content", ""))
+        else:
+            role = str(getattr(last_message, "type", getattr(last_message, "role", "")))
+            content = str(getattr(last_message, "content", ""))
+
+        assert role in ("user", "human")
+        assert "Continue implementing now based on the review above" in content
 
     @pytest.mark.asyncio
     async def test_completion_blocked_without_build_and_lint_verification(
