@@ -1,15 +1,18 @@
-# Agent Swarm POC
+# Agentica
 
 ## Project Overview
+
 A proof-of-concept comparing three AI-assisted coding paradigms: Single ReAct Agent, Task Decomposition Swarm, and Parallel Hypothesis Testing. The application provides a visual "mission control" interface to observe agents working in real-time.
 
 ## Tech Stack
+
 - **Frontend:** Next.js 15, React 19, TypeScript 5.x, Tailwind CSS 4, shadcn/ui, React Flow 12, Monaco Editor, xterm.js
 - **Backend:** Python 3.12, FastAPI 0.115+, LangGraph 0.2+, LiteLLM, docker-py, Pydantic v2
 - **Package Management:** UV for Python, npm for Node.js
 - **Infrastructure:** Docker containers for sandboxed code execution
 
 ## Project Structure
+
 ```
 agent-swarm-poc/
 ├── frontend/                 # Next.js application
@@ -64,6 +67,7 @@ agent-swarm-poc/
 ```
 
 ## Development Commands
+
 ```bash
 # Backend (uses UV)
 cd backend && uv run uvicorn main:app --reload
@@ -88,6 +92,7 @@ make sandbox-image
 ## Code Standards
 
 ### Python
+
 - Use UV for all package management (`uv add`, `uv run`)
 - Strict type hints on all functions
 - Async/await for all I/O operations
@@ -95,6 +100,7 @@ make sandbox-image
 - Pydantic v2 for all data models
 
 ### TypeScript
+
 - Strict mode enabled (`"strict": true`, `"noUncheckedIndexedAccess": true`)
 - No `any` types - use `unknown` for truly unknown types
 - Explicit return types on all functions: `React.ReactElement` (not `JSX.Element` - React 19 change)
@@ -102,6 +108,7 @@ make sandbox-image
 - Interface data types for React Flow must extend `Record<string, unknown>`
 
 ### React
+
 - Functional components only (no class components)
 - Hooks for all state and side effects
 - Zustand for global state management
@@ -109,6 +116,7 @@ make sandbox-image
 - All components use `"use client"` directive for client-side rendering
 
 ### Styling
+
 - Tailwind CSS 4 with `@tailwindcss/postcss` plugin (not direct `tailwindcss`)
 - "Mission Control" design aesthetic:
   - Background: #0a0a0f (near-black)
@@ -122,6 +130,7 @@ make sandbox-image
 ## Architecture
 
 ### Frontend State Management
+
 ```
 Zustand Store (lib/store.ts)
 ├── Session state (sessionId, status, mode, task)
@@ -138,6 +147,7 @@ Key action: processEvent(event) - dispatches all WebSocket events to update stat
 ```
 
 ### Event Flow
+
 ```
 Backend LangGraph Node
     ↓
@@ -153,10 +163,13 @@ UI re-renders via hooks
 ```
 
 ### Error Boundaries
+
 The frontend uses React error boundaries (`components/ErrorBoundary.tsx`) to catch and display runtime errors gracefully, preventing full-page crashes during agent execution or rendering failures.
 
 ### Custom Hooks Pattern
+
 Each hook selects specific slices from the store:
+
 - `useSession()` - session lifecycle + WebSocket management
 - `useMessages()` - events array + agents list
 - `useAgentGraph()` - mode-specific graph state
@@ -164,7 +177,9 @@ Each hook selects specific slices from the store:
 - `usePrompt()` - input value + submit/cancel actions
 
 ### Sandbox Communication
+
 All agent-sandbox communication goes through `SandboxManager`:
+
 ```python
 sandbox_manager.write_file(sandbox_id, path, content)
 sandbox_manager.read_file(sandbox_id, path)
@@ -173,13 +188,16 @@ sandbox_manager.start_dev_server(sandbox_id)
 ```
 
 ### Security
+
 - Command execution policy is configurable (`SANDBOX_ALLOW_UNRESTRICTED_COMMANDS`)
 - Prevent path traversal (no `..` in paths)
 - Containers run as non-root with dropped capabilities
 - Sandbox containers are isolated and resource-limited
 
 ## Environment Variables
+
 Create `.env` in project root:
+
 ```
 XAI_API_KEY=xai-...           # For Grok models
 GEMINI_API_KEY=AIzaSy...      # For Gemini models
@@ -188,23 +206,30 @@ GEMINI_API_KEY=AIzaSy...      # For Gemini models
 ## Three Agent Modes
 
 ### 1. ReAct (Single Agent) - IMPLEMENTED
+
 Simple reason→act→review loop. One agent, one sandbox.
+
 - Graph: User → Agent (with status indicator) → Result
 - Agent cycles through: idle → reasoning → executing → complete
 
 ### 2. Task Decomposition - IMPLEMENTED
+
 Orchestrator decomposes task → parallel sub-agents execute → aggregator merges → integration review.
+
 - Graph: User → Orchestrator → [Sub-agents] → Aggregator → Result
 - LangGraph: orchestrate → execute_subtask → aggregate → integration_review
 - Implementation: `backend/agents/decomposition_graph.py`
 
 ### 3. Parallel Hypothesis - IMPLEMENTED
+
 N agents independently solve the full task → evaluator scores and picks winner.
+
 - Graph: User → [Solver 1, 2, 3...] → Evaluator → Winner highlighted
 - LangGraph: broadcast → solve → evaluate → finalize
 - Implementation: `backend/agents/hypothesis_graph.py`
 
 ## API Endpoints
+
 - `POST /api/sessions` - Create new session with mode and task
 - `GET /api/sessions/{id}` - Get session details
 - `POST /api/sessions/{id}/cancel` - Cancel running session
@@ -215,7 +240,9 @@ N agents independently solve the full task → evaluator scores and picks winner
 - `WS /ws/{session_id}` - Real-time event stream
 
 ## Event Types
+
 Key events the frontend handles:
+
 - `session_started`, `session_complete`, `session_error`
 - `agent_spawned`, `agent_thinking`, `agent_tool_call`, `agent_tool_result`, `agent_complete`
 - `file_changed`, `file_deleted`
@@ -227,28 +254,34 @@ Key events the frontend handles:
 ## Common Issues & Fixes
 
 ### React 19 + TypeScript
+
 - Use `React.ReactElement` instead of `JSX.Element` for return types
 - React Flow node/edge data interfaces must extend `Record<string, unknown>`
 - Import React namespace: `import * as React from "react"`
 
 ### Tailwind CSS 4
+
 - Use `@tailwindcss/postcss` in postcss.config.js, not `tailwindcss` directly
 - PostCSS config: `{ "@tailwindcss/postcss": {} }`
 
 ### Pydantic v2 `model_config` Conflict
+
 - Pydantic v2 reserves `model_config` as a class-level attribute (`ConfigDict`). The API uses `llm_config` as the field alias for LLM configuration in session creation requests. Always use `llm_config` in API payloads, not `model_config`.
 
 ### useEffect Return Values
+
 - All useEffect callbacks must return consistently (cleanup function or undefined)
 - Early returns should use `return;` not `return () => {}`
 
 ## Testing
+
 - Backend: pytest + pytest-asyncio, 80%+ coverage on critical paths
 - Frontend: Vitest + React Testing Library
 - E2E: Playwright
 - Use `USE_MOCK_LLM=true` for testing without API costs
 
 ## Running E2E Test
+
 1. Build sandbox image: `make sandbox-image`
 2. Start backend: `cd backend && uv run uvicorn main:app --reload`
 3. Start frontend: `cd frontend && npm run dev`

@@ -1,1 +1,1 @@
-"""Backend test suite for Agent Swarm POC."""
+"""Backend test suite for Agentica."""

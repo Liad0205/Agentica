@@ -1,4 +1,4 @@
-"""System prompts for all agent roles in the agent swarm system.
+"""System prompts for all agent roles in Agentica.
 
 This module contains the prompt templates used by different agent types:
 - BASE_CODING_AGENT_PROMPT: Used by all agents for general coding tasks

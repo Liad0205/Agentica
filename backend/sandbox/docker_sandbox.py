@@ -101,7 +101,7 @@ class SandboxManager:
 
     def __init__(
         self,
-        image_name: str = "agent-swarm-sandbox:latest",
+        image_name: str = "agentica-sandbox:latest",
         base_port: int = 5173,
         max_sandboxes: int = 10,
     ) -> None:

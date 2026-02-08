@@ -29,7 +29,7 @@ services:
 
   sandbox-builder:
     build: ./sandbox-image
-    image: agent-swarm-sandbox:latest
+    image: agentica-sandbox:latest
     command: ["echo", "Sandbox image built"]
 
 volumes:

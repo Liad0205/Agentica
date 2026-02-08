@@ -1,4 +1,4 @@
-"""Event type definitions for the agent swarm event system.
+"""Event type definitions for the Agentica event system.
 
 This module defines all event types that flow from the backend agent execution
 to the frontend visualization. Every meaningful state change produces an event.
@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 
 class EventType(StrEnum):
-    """All event types in the agent swarm system.
+    """All event types in the Agentica system.
 
     Events are categorized by:
     - Session lifecycle: Start, completion, and error states

@@ -15,7 +15,7 @@ const geistSans = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "Agentica | Agent Swarm POC",
+  title: "Agentica",
   description:
     "Compare AI-assisted coding paradigms: Single ReAct Agent, Task Decomposition Swarm, and Parallel Hypothesis Testing",
 };

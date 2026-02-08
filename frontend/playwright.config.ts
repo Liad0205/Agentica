@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Playwright configuration for Agent Swarm POC E2E tests.
+ * Playwright configuration for Agentica E2E tests.
  *
  * @see https://playwright.dev/docs/test-configuration
  */

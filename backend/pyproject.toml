@@ -1,7 +1,7 @@
 [project]
-name = "agent-swarm-backend"
+name = "agentica-backend"
 version = "0.1.0"
-description = "Backend for Agent Swarm POC - comparing AI-assisted coding paradigms"
+description = "Backend for Agentica - comparing AI-assisted coding paradigms"
 license = "MIT"
 authors = [{name = "Liad Mazor"}]
 requires-python = ">=3.12"
@@ -31,9 +31,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/<your-username>/agent-swarm-poc"
-Repository = "https://github.com/<your-username>/agent-swarm-poc"
-Issues = "https://github.com/<your-username>/agent-swarm-poc/issues"
+Homepage = "https://github.com/Liad0205/agentica"
+Repository = "https://github.com/Liad0205/agentica"
+Issues = "https://github.com/Liad0205/agentica/issues"
 
 [build-system]
 requires = ["hatchling"]

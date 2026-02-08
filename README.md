@@ -1,8 +1,13 @@
-# Agent Swarm POC
+# Agentica
 
-A proof-of-concept application comparing three AI-assisted coding paradigms: **Single ReAct Agent**, **Task Decomposition Swarm**, and **Parallel Hypothesis Testing**. The application provides a visual "mission control" interface to observe agents working in real-time.
+> **Alpha -- Research Repository**
+> This is an active research project, not a product. APIs, architecture, and behavior may change without notice. Things can (and probably will) break.
 
-What makes this interesting: instead of treating AI code generation as a black box, Agent Swarm POC lets you watch multiple AI agents reason, write code, and collaborate in real time. The mission control dashboard visualizes agent graphs, streams thinking and tool calls live, and lets you compare how different orchestration strategies tackle the same coding task -- from a single ReAct loop to a full parallel hypothesis race.
+A multi-agent system for AI-assisted coding that compares three orchestration paradigms: **Single ReAct Agent**, **Task Decomposition Swarm**, and **Parallel Hypothesis Testing**. A visual "mission control" dashboard lets you observe agents reasoning, writing code, and collaborating in real time.
+
+![Agentica mission control dashboard showing the task decomposition mode with agent graph visualization and live terminal output](assets/mas.png)
+
+Instead of treating AI code generation as a black box, Agentica lets you watch what's actually happening. The dashboard visualizes agent graphs, streams thinking and tool calls live, and lets you compare how different orchestration strategies tackle the same coding task -- from a single ReAct loop to a full parallel hypothesis race.
 
 ## Features
 
@@ -35,8 +40,8 @@ What makes this interesting: instead of treating AI code generation as a black b
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/agent-swarm-poc
-cd agent-swarm-poc
+git clone https://github.com/Liad0205/agentica
+cd agentica
 
 # Sync backend dependencies (project lives in backend/)
 cd backend

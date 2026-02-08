@@ -53,7 +53,7 @@ test:
 
 clean:
 	docker-compose down -v --rmi local
-	docker image rm agent-swarm-sandbox:latest || true
+	docker image rm agentica-sandbox:latest || true
 
 sandbox-image:
-	docker build -t agent-swarm-sandbox:latest ./sandbox-image
+	docker build -t agentica-sandbox:latest ./sandbox-image

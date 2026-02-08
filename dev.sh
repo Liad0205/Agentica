@@ -1,5 +1,5 @@
 #!/bin/bash
-# Development startup script for Agent Swarm POC
+# Development startup script for Agentica
 # Usage:
 #   ./dev.sh          - Start all services
 #   ./dev.sh stop     - Stop all services
@@ -63,7 +63,7 @@ clean_docker() {
     log_info "Cleaning up Docker resources..."
 
     # Stop and remove sandbox containers
-    docker ps -a --filter "ancestor=agent-swarm-sandbox:latest" -q | xargs -r docker rm -f 2>/dev/null || true
+    docker ps -a --filter "ancestor=agentica-sandbox:latest" -q | xargs -r docker rm -f 2>/dev/null || true
 
     # Remove dangling containers with sandbox prefix
     docker ps -a --filter "name=sandbox_" -q | xargs -r docker rm -f 2>/dev/null || true
@@ -82,9 +82,9 @@ clean_all() {
 }
 
 build_sandbox_image() {
-    if ! docker image inspect agent-swarm-sandbox:latest >/dev/null 2>&1; then
+    if ! docker image inspect agentica-sandbox:latest >/dev/null 2>&1; then
         log_info "Building sandbox Docker image..."
-        docker build -t agent-swarm-sandbox:latest "$PROJECT_ROOT/sandbox-image"
+        docker build -t agentica-sandbox:latest "$PROJECT_ROOT/sandbox-image"
         log_success "Sandbox image built"
     else
         log_info "Sandbox image already exists"
@@ -205,7 +205,7 @@ show_logs() {
 start_all() {
     echo ""
     echo "======================================"
-    echo "   Agent Swarm POC - Development"
+    echo "   Agentica - Development"
     echo "======================================"
     echo ""
 

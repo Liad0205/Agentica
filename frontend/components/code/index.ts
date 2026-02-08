@@ -1,5 +1,5 @@
 /**
- * Code panel components for the Agent Swarm POC.
+ * Code panel components for Agentica.
  * Includes Monaco editor, file tree, preview iframe, and terminal.
  */
 

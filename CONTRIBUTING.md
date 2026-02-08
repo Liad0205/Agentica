@@ -1,4 +1,4 @@
-# Contributing to Agent Swarm POC
+# Contributing to Agentica
 
 Thank you for your interest in contributing! This guide will help you get started.
 
@@ -14,8 +14,8 @@ Thank you for your interest in contributing! This guide will help you get starte
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/your-username/agent-swarm-poc.git
-   cd agent-swarm-poc
+   git clone https://github.com/Liad0205/agentica.git
+   cd agentica
    ```
 
 2. **Build the sandbox Docker image**

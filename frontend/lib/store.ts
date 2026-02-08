@@ -1,5 +1,5 @@
 /**
- * Zustand store for the Agent Swarm POC frontend application.
+ * Zustand store for the Agentica frontend application.
  * Manages all application state including sessions, agents, files, and UI state.
  */
 

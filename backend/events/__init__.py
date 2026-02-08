@@ -1,4 +1,4 @@
-"""Event system for agent swarm communication.
+"""Event system for Agentica communication.
 
 This package provides the event infrastructure for communication between
 backend agent execution and frontend visualization. The event system is

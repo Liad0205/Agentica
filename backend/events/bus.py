@@ -1,4 +1,4 @@
-"""Async event bus for agent swarm pub/sub communication.
+"""Async event bus for Agentica pub/sub communication.
 
 This module provides an EventBus class that enables asynchronous
 publish/subscribe communication between backend agents and frontend

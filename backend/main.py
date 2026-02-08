@@ -1,4 +1,4 @@
-"""FastAPI application entry point for Agent Swarm backend.
+"""FastAPI application entry point for Agentica backend.
 
 This module initializes the FastAPI application with all middleware,
 routers, and event handlers configured.
@@ -116,7 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 # Create FastAPI application
 app = FastAPI(
-    title="Agent Swarm POC",
+    title="Agentica",
     description="Backend API for comparing AI-assisted coding paradigms: "
     "Single ReAct Agent, Task Decomposition Swarm, and Parallel Hypothesis Testing.",
     version="0.1.0",
@@ -151,7 +151,7 @@ async def root() -> dict[str, str]:
         A welcome message with documentation URL.
     """
     return {
-        "message": "Agent Swarm POC API",
+        "message": "Agentica API",
         "docs": "/docs",
         "health": "/health",
     }

@@ -1,6 +1,6 @@
 """Application configuration using Pydantic Settings.
 
-This module provides centralized configuration management for the Agent Swarm backend.
+This module provides centralized configuration management for the Agentica backend.
 All settings can be overridden via environment variables or a .env file.
 """
 
@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3  # Max retries before giving up or falling back
 
     # Sandbox Configuration
-    sandbox_image: str = "agent-swarm-sandbox:latest"
+    sandbox_image: str = "agentica-sandbox:latest"
     sandbox_base_port: int = 5173
     max_concurrent_sandboxes: int = 10
     sandbox_cleanup_interval_minutes: int = 5

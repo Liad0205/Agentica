@@ -1,13 +1,13 @@
 {
-  "name": "agent-swarm-frontend",
+  "name": "agentica-frontend",
   "version": "0.1.0",
-  "description": "Frontend for Agent Swarm POC - visual mission control for AI coding agents",
+  "description": "Frontend for Agentica - visual mission control for AI coding agents",
   "author": "Liad Mazor",
   "license": "MIT",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/<your-username>/agent-swarm-poc"
+    "url": "https://github.com/Liad0205/agentica"
   },
   "scripts": {
     "dev": "next dev",

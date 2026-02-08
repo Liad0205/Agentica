@@ -1,4 +1,4 @@
-"""HTTP API routes for the Agent Swarm backend.
+"""HTTP API routes for the Agentica backend.
 
 This module defines all HTTP endpoints for session management, file access,
 and health checks. Real-time events are handled via WebSocket in websocket.py.
