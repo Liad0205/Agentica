@@ -5,7 +5,7 @@
 
 A multi-agent system for AI-assisted coding that compares three orchestration paradigms: **Single ReAct Agent**, **Task Decomposition Swarm**, and **Parallel Hypothesis Testing**. A visual "mission control" dashboard lets you observe agents reasoning, writing code, and collaborating in real time.
 
-![Agentica mission control dashboard showing the task decomposition mode with agent graph visualization and live terminal output](assets/mas.png)
+![Agentica mission control dashboard showing the task decomposition mode with agent graph visualization and live terminal output](assets/mas.jpg)
 
 Instead of treating AI code generation as a black box, Agentica lets you watch what's actually happening. The dashboard visualizes agent graphs, streams thinking and tool calls live, and lets you compare how different orchestration strategies tackle the same coding task -- from a single ReAct loop to a full parallel hypothesis race.
 
@@ -65,12 +65,12 @@ cp env.example .env
 
 Required variables:
 
-| Variable | Description |
-|---|---|
-| `XAI_API_KEY` | API key for Grok models |
-| `GEMINI_API_KEY` | API key for Gemini models |
-| `DEFAULT_MODEL` | Default LLM model (e.g. `gemini/gemini-3-flash-preview`) |
-| `USE_MOCK_LLM` | Set to `true` for testing without API costs |
+| Variable         | Description                                              |
+| ---------------- | -------------------------------------------------------- |
+| `XAI_API_KEY`    | API key for Grok models                                  |
+| `GEMINI_API_KEY` | API key for Gemini models                                |
+| `DEFAULT_MODEL`  | Default LLM model (e.g. `gemini/gemini-3-flash-preview`) |
+| `USE_MOCK_LLM`   | Set to `true` for testing without API costs              |
 
 See `env.example` for the full list of configuration options including agent limits, sandbox settings, and server configuration.
 
@@ -122,6 +122,7 @@ Backend LangGraph Node
 ### Sandbox Isolation
 
 Each agent operates in its own Docker container with:
+
 - Non-root execution with dropped capabilities
 - Configurable command policy (default: unrestricted inside sandbox via
   `SANDBOX_ALLOW_UNRESTRICTED_COMMANDS=true`)
@@ -130,12 +131,12 @@ Each agent operates in its own Docker container with:
 
 ## Tech Stack
 
-| Layer | Technologies |
-|---|---|
-| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, React Flow 12, Monaco Editor, xterm.js |
-| Backend | Python 3.12, FastAPI, LangGraph, LiteLLM, Pydantic v2, docker-py |
-| Infrastructure | Docker containers for sandboxed execution |
-| Package Management | UV (Python), npm (Node.js) |
+| Layer              | Technologies                                                                                        |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| Frontend           | Next.js 15, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, React Flow 12, Monaco Editor, xterm.js |
+| Backend            | Python 3.12, FastAPI, LangGraph, LiteLLM, Pydantic v2, docker-py                                    |
+| Infrastructure     | Docker containers for sandboxed execution                                                           |
+| Package Management | UV (Python), npm (Node.js)                                                                          |
 
 ## Development
 
@@ -170,18 +171,18 @@ make sandbox-image
 
 ### Useful Make Targets
 
-| Target | Description |
-|---|---|
-| `make dev` | Start full stack in development mode |
-| `make dev-backend` | Start backend only |
-| `make dev-frontend` | Start frontend only |
-| `make backend-sync` | Sync backend dependencies (includes dev extras) |
-| `make backend-env-check` | Verify backend env + pytest/ruff availability |
-| `make lint-backend` | Run backend Ruff checks |
-| `make build` | Build all containers |
-| `make test` | Run all tests |
-| `make sandbox-image` | Build the sandbox Docker image |
-| `make clean` | Remove containers and images |
+| Target                   | Description                                     |
+| ------------------------ | ----------------------------------------------- |
+| `make dev`               | Start full stack in development mode            |
+| `make dev-backend`       | Start backend only                              |
+| `make dev-frontend`      | Start frontend only                             |
+| `make backend-sync`      | Sync backend dependencies (includes dev extras) |
+| `make backend-env-check` | Verify backend env + pytest/ruff availability   |
+| `make lint-backend`      | Run backend Ruff checks                         |
+| `make build`             | Build all containers                            |
+| `make test`              | Run all tests                                   |
+| `make sandbox-image`     | Build the sandbox Docker image                  |
+| `make clean`             | Remove containers and images                    |
 
 ### Mock LLM Mode
 
