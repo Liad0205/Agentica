@@ -48,6 +48,10 @@ from sandbox.docker_sandbox import SandboxManager
 
 logger = structlog.get_logger()
 
+# Threshold for total consecutive tool failures across all tool types.
+# When exceeded, the agent assumes the sandbox is unresponsive and fails fast.
+_TOTAL_TOOL_FAILURE_THRESHOLD = 6
+
 
 class ReactState(TypedDict):
     """State for the ReAct agent graph.
@@ -68,6 +72,7 @@ class ReactState(TypedDict):
         agent_id: Agent identifier for events
         build_verified: Whether a successful build command has run in-session
         lint_verified: Whether a successful lint command has run in-session
+        total_tool_failures: Consecutive tool failures across all tool types
     """
 
     task: str
@@ -81,6 +86,7 @@ class ReactState(TypedDict):
     session_id: str
     agent_id: str
     tool_error_counts: dict[str, int]
+    total_tool_failures: int
     build_verified: bool
     lint_verified: bool
 
@@ -119,6 +125,7 @@ def create_initial_state(
         session_id=session_id,
         agent_id=agent_id,
         tool_error_counts={},
+        total_tool_failures=0,
         build_verified=False,
         lint_verified=False,
     )
@@ -150,6 +157,7 @@ class ReactGraph:
         r"^\s*(?:ls|pwd|cat|head|tail|grep|rg|find|wc|which|readlink)\b",
         re.IGNORECASE,
     )
+    _CHAINED_COMMAND_RE = re.compile(r"[;&|]")
     _MUTATING_COMMAND_RE = re.compile(
         r"(?:\>\s*\S|\>\>\s*\S|\bsed\s+-i\b|\bnpm\s+install\b|\bpnpm\s+add\b|\byarn\s+add\b|\bmkdir\b|\btouch\b|\bmv\b|\bcp\b|\brm\b)",
         re.IGNORECASE,
@@ -257,7 +265,17 @@ class ReactGraph:
 
     @classmethod
     def _is_observational_command(cls, command: str) -> bool:
-        return bool(command and cls._OBSERVATIONAL_COMMAND_RE.search(command))
+        """Check if a command is purely observational (read-only).
+
+        Chained commands (using &&, ||, ;, or |) are never classified as
+        observational because subsequent parts may be mutating.
+        """
+        if not command:
+            return False
+        # Chained commands may contain mutating parts after the first command
+        if cls._CHAINED_COMMAND_RE.search(command):
+            return False
+        return bool(cls._OBSERVATIONAL_COMMAND_RE.search(command))
 
     @classmethod
     def _is_potentially_mutating_command(cls, command: str) -> bool:
@@ -307,13 +325,33 @@ class ReactGraph:
             await self._emit_thinking(state, f"[Reflection at iteration {iteration}]")
 
         # Call the LLM
-        response = await self.llm_client.call(
-            messages=messages,
-            tools=get_tool_definitions_for_llm(),
-            session_id=state["session_id"],
-            agent_id=state["agent_id"],
-            temperature=self.temperature,
-        )
+        try:
+            response = await self.llm_client.call(
+                messages=messages,
+                tools=get_tool_definitions_for_llm(),
+                session_id=state["session_id"],
+                agent_id=state["agent_id"],
+                temperature=self.temperature,
+            )
+        except Exception as e:
+            logger.error(
+                "reason_and_plan_llm_call_failed",
+                session_id=state["session_id"],
+                iteration=iteration,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            error_msg = f"LLM call failed during reasoning: {type(e).__name__}: {e}"
+            await self._emit_thinking(state, f"[Error] {error_msg}")
+            await self._emit_node_complete(state, "reason")
+            return {
+                "messages": [
+                    {"role": "assistant", "content": error_msg},
+                ],
+                "iteration": state["iteration"] + 1,
+                "current_plan": "",
+                "status": "failed",
+            }
 
         # Extract plan from response
         plan = parse_plan_tag(response.content)
@@ -385,6 +423,7 @@ class ReactGraph:
         tool_messages: list[dict[str, Any]] = []
         new_files: list[str] = []
         error_counts = dict(state.get("tool_error_counts", {}))
+        total_failures = int(state.get("total_tool_failures", 0))
         build_verified = bool(state.get("build_verified", False))
         lint_verified = bool(state.get("lint_verified", False))
 
@@ -428,12 +467,50 @@ class ReactGraph:
             if not result.success:
                 error_counts[tool_call.name] = error_counts.get(tool_call.name, 0) + 1
                 consecutive_failures = error_counts[tool_call.name]
+                total_failures += 1
+
+                # Circuit breaker: if too many consecutive failures across all
+                # tool types, the sandbox is likely dead or unresponsive.
+                if total_failures >= _TOTAL_TOOL_FAILURE_THRESHOLD:
+                    error_snippet = result.content[:1500] if result.content else "Unknown error"
+                    circuit_msg = (
+                        f"CRITICAL: {total_failures} consecutive tool failures across all tools. "
+                        f"The sandbox appears unresponsive or has crashed. "
+                        f"Latest error from '{tool_call.name}':\n\n"
+                        f"```\n{error_snippet}\n```\n\n"
+                        f"Unable to continue execution."
+                    )
+                    tool_messages.append(
+                        format_tool_result_for_llm(tool_call.id, result.content)
+                    )
+                    tool_messages.append({
+                        "role": "user",
+                        "content": circuit_msg,
+                    })
+                    logger.error(
+                        "total_tool_failure_circuit_breaker",
+                        total_failures=total_failures,
+                        session_id=state["session_id"],
+                    )
+                    await self._emit_node_complete(state, "execute")
+                    return {
+                        "messages": tool_messages,
+                        "files_written": state["files_written"] + new_files,
+                        "tool_error_counts": error_counts,
+                        "total_tool_failures": total_failures,
+                        "build_verified": build_verified,
+                        "lint_verified": lint_verified,
+                        "status": "failed",
+                    }
 
                 if consecutive_failures >= 3:
-                    # Inject guidance message after the tool result
+                    # Inject guidance message with actual error content
+                    error_snippet = result.content[:1500] if result.content else "Unknown error"
                     guidance = (
                         f"Tool '{tool_call.name}' has failed {consecutive_failures} "
-                        f"consecutive times. Consider trying a different approach or tool."
+                        f"consecutive times. Latest error:\n\n"
+                        f"```\n{error_snippet}\n```\n\n"
+                        f"Consider trying a completely different approach or tool."
                     )
                     tool_messages.append(
                         format_tool_result_for_llm(tool_call.id, result.content)
@@ -450,8 +527,9 @@ class ReactGraph:
                     )
                     continue
             else:
-                # Reset counter on success
+                # Reset counters on success
                 error_counts[tool_call.name] = 0
+                total_failures = 0
 
             # Track written files
             if tool_call.name == "write_file" and result.success:
@@ -467,12 +545,15 @@ class ReactGraph:
                 format_tool_result_for_llm(tool_call.id, result.content)
             )
             if not result.success:
+                # Include the actual error output so the LLM can diagnose
+                error_snippet = result.content[:1500] if result.content else "Unknown error"
                 tool_messages.append({
                     "role": "user",
                     "content": (
-                        "The previous tool call failed. Analyze the error, "
-                        "identify the root cause, and adjust your approach. "
-                        "Do NOT repeat the same action."
+                        f"The previous tool call `{tool_call.name}` failed with this error:\n\n"
+                        f"```\n{error_snippet}\n```\n\n"
+                        "Analyze the error output above, identify the root cause, "
+                        "and adjust your approach. Do NOT repeat the same action."
                     ),
                 })
 
@@ -489,6 +570,7 @@ class ReactGraph:
             "messages": tool_messages,
             "files_written": state["files_written"] + new_files,
             "tool_error_counts": error_counts,
+            "total_tool_failures": total_failures,
             "build_verified": build_verified,
             "lint_verified": lint_verified,
             "status": "reviewing",
@@ -523,13 +605,31 @@ class ReactGraph:
         })
 
         # Call the LLM for review - no tools, lower temperature for determinism
-        response = await self.llm_client.call(
-            messages=review_messages,
-            tools=None,
-            session_id=state["session_id"],
-            agent_id=state["agent_id"],
-            temperature=0.3,
-        )
+        try:
+            response = await self.llm_client.call(
+                messages=review_messages,
+                tools=None,
+                session_id=state["session_id"],
+                agent_id=state["agent_id"],
+                temperature=0.3,
+            )
+        except Exception as e:
+            logger.error(
+                "self_review_llm_call_failed",
+                session_id=state["session_id"],
+                iteration=state["iteration"],
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            error_msg = f"LLM call failed during review: {type(e).__name__}: {e}"
+            await self._emit_thinking(state, f"[Error] {error_msg}")
+            await self._emit_node_complete(state, "review")
+            return {
+                "messages": [
+                    {"role": "assistant", "content": error_msg},
+                ],
+                "status": "failed",
+            }
 
         # Emit the review content
         await self._emit_thinking(state, response.content)
@@ -542,9 +642,10 @@ class ReactGraph:
         elif status_tag == "NEEDS_REVISION":
             is_complete = False
         else:
-            # Fallback to substring matching for model compatibility
+            # Fallback: use word boundary regex instead of substring match
+            # to avoid false positives like "haven't reached task_complete"
             content_lower = response.content.lower()
-            is_complete = "task_complete" in content_lower
+            is_complete = bool(re.search(r'\btask_complete\b', content_lower))
 
         # Format the assistant message (no tool calls in review)
         assistant_message = format_assistant_message_with_tools(
@@ -599,11 +700,9 @@ class ReactGraph:
             }
 
         if not is_complete:
-            # Ensure the next reason step receives an explicit user turn.
-            # Some models stall or emit minimal output when the prior turn is
-            # assistant-only review feedback without a follow-up user message.
             revision_handoff = (
-                "Continue implementing now based on the review above. "
+                "The review above identified issues that must be fixed. "
+                "Address the specific problems mentioned in the review. "
                 "Use tools to inspect files, make targeted edits, and run "
                 "`npm run build` / `npm run lint` before reviewing again."
             )
@@ -750,35 +849,32 @@ class ReactGraph:
             )
         )
 
-        # Stream the graph execution
-        final_state = None
-        async for state in self._compiled_graph.astream(initial_state):
-            final_state = state
-            yield state
-
-        # Emit agent complete event
-        if final_state:
-            # Extract the actual state from the last event
-            # LangGraph stream returns {node_name: state_update} dicts
-            actual_state = initial_state.copy()
-            if isinstance(final_state, dict):
-                for node_update in final_state.values():
+        # Stream the graph execution, accumulating state updates progressively.
+        # Each yield from astream is {node_name: partial_state_update}; we must
+        # merge ALL of them to reconstruct the final state correctly.
+        actual_state = dict(initial_state)
+        async for state_update in self._compiled_graph.astream(initial_state):
+            # Apply each node's updates to the accumulated state
+            if isinstance(state_update, dict):
+                for node_update in state_update.values():
                     if isinstance(node_update, dict):
                         actual_state.update(node_update)
+            yield state_update
 
-            await self.event_bus.publish(
-                AgentEvent(
-                    type=EventType.AGENT_COMPLETE,
-                    session_id=initial_state["session_id"],
-                    agent_id=initial_state["agent_id"],
-                    agent_role="ReAct Agent",
-                    data={
-                        "status": actual_state.get("status", "unknown"),
-                        "iterations": actual_state.get("iteration", 0),
-                        "files_written": actual_state.get("files_written", []),
-                    },
-                )
+        # Emit agent complete event
+        await self.event_bus.publish(
+            AgentEvent(
+                type=EventType.AGENT_COMPLETE,
+                session_id=initial_state["session_id"],
+                agent_id=initial_state["agent_id"],
+                agent_role="ReAct Agent",
+                data={
+                    "status": actual_state.get("status", "unknown"),
+                    "iterations": actual_state.get("iteration", 0),
+                    "files_written": actual_state.get("files_written", []),
+                },
             )
+        )
 
 
 def create_react_graph(

@@ -45,13 +45,13 @@ from agents.tools import (
 )
 from agents.utils import (
     LLMClient,
-    classify_build_errors,
     extract_json_from_response,
     format_assistant_message_with_tools,
     format_tool_result_for_llm,
     parse_plan_tag,
     parse_status_tag,
     sliding_window_prune,
+    summarize_build_errors,
     topological_sort,
 )
 from config import settings
@@ -68,7 +68,6 @@ TEMPLATE_SCAFFOLD_FILES = {
     "tsconfig.json",
     "tsconfig.app.json",
     "tsconfig.node.json",
-    "index.html",
     ".eslintrc.json",
     "src/types.ts",
 }
@@ -80,11 +79,29 @@ INTEGRATION_SEED_BASE_FILES = {
     "yarn.lock",
     "vite.config.ts",
     "postcss.config.js",
+    "tailwind.config.ts",
+    "tailwind.config.js",
     "tsconfig.json",
     "tsconfig.app.json",
     "tsconfig.node.json",
+    "index.html",
     "src/types.ts",
 }
+
+COLLECT_ROOT_CONFIG_FILES: tuple[str, ...] = (
+    "index.html",
+    "package.json",
+    "tsconfig.json",
+    "tsconfig.app.json",
+    "tsconfig.node.json",
+    "vite.config.ts",
+    "postcss.config.js",
+    "postcss.config.cjs",
+    "tailwind.config.ts",
+    "tailwind.config.js",
+    "eslint.config.js",
+    ".eslintrc.json",
+)
 
 APP_ENTRYPOINT_PATH = "src/App.tsx"
 
@@ -357,30 +374,48 @@ class DecompositionGraph:
     async def _emit_node_active(
         self, session_id: str, agent_id: str, agent_role: str, node_name: str
     ) -> None:
-        """Emit GRAPH_NODE_ACTIVE event."""
-        await self.event_bus.publish(
-            AgentEvent(
-                type=EventType.GRAPH_NODE_ACTIVE,
-                session_id=session_id,
-                agent_id=agent_id,
-                agent_role=agent_role,
-                data={"node_id": node_name},
+        """Emit GRAPH_NODE_ACTIVE event. Best-effort — never raises."""
+        try:
+            await self.event_bus.publish(
+                AgentEvent(
+                    type=EventType.GRAPH_NODE_ACTIVE,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    agent_role=agent_role,
+                    data={"node_id": node_name},
+                )
             )
-        )
+        except Exception:
+            logger.warning(
+                "event_emission_failed",
+                event_type="GRAPH_NODE_ACTIVE",
+                session_id=session_id,
+                node_name=node_name,
+                exc_info=True,
+            )
 
     async def _emit_node_complete(
         self, session_id: str, agent_id: str, agent_role: str, node_name: str
     ) -> None:
-        """Emit GRAPH_NODE_COMPLETE event."""
-        await self.event_bus.publish(
-            AgentEvent(
-                type=EventType.GRAPH_NODE_COMPLETE,
-                session_id=session_id,
-                agent_id=agent_id,
-                agent_role=agent_role,
-                data={"node_id": node_name},
+        """Emit GRAPH_NODE_COMPLETE event. Best-effort — never raises."""
+        try:
+            await self.event_bus.publish(
+                AgentEvent(
+                    type=EventType.GRAPH_NODE_COMPLETE,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    agent_role=agent_role,
+                    data={"node_id": node_name},
+                )
             )
-        )
+        except Exception:
+            logger.warning(
+                "event_emission_failed",
+                event_type="GRAPH_NODE_COMPLETE",
+                session_id=session_id,
+                node_name=node_name,
+                exc_info=True,
+            )
 
     async def _emit_thinking(
         self,
@@ -390,19 +425,28 @@ class DecompositionGraph:
         content: str,
         streaming: bool = False,
     ) -> None:
-        """Emit AGENT_THINKING event."""
-        await self.event_bus.publish(
-            AgentEvent(
-                type=EventType.AGENT_THINKING,
+        """Emit AGENT_THINKING event. Best-effort — never raises."""
+        try:
+            await self.event_bus.publish(
+                AgentEvent(
+                    type=EventType.AGENT_THINKING,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    agent_role=agent_role,
+                    data={
+                        "content": content,
+                        "streaming": streaming,
+                    },
+                )
+            )
+        except Exception:
+            logger.warning(
+                "event_emission_failed",
+                event_type="AGENT_THINKING",
                 session_id=session_id,
                 agent_id=agent_id,
-                agent_role=agent_role,
-                data={
-                    "content": content,
-                    "streaming": streaming,
-                },
+                exc_info=True,
             )
-        )
 
     def _remaining_session_budget_seconds(self) -> float:
         """Return remaining wall-clock budget for the current session."""
@@ -458,6 +502,38 @@ class DecompositionGraph:
     _NPM_DEP_RE = re.compile(
         r"^(@[a-z0-9\-~][a-z0-9\-._~]*/)?[a-z0-9\-~][a-z0-9\-._~]*(@[^\s;|&`$]+)?$"
     )
+    _SUBTASK_ALLOWED_COMMAND_PREFIXES: tuple[str, ...] = (
+        "npm install",
+        "npm run build",
+        "npm run lint",
+        "npm test",
+        "npx eslint",
+        "pnpm install",
+        "pnpm add",
+        "yarn install",
+        "yarn add",
+        "ls",
+        "pwd",
+        "cat",
+        "head",
+        "tail",
+        "grep",
+        "rg",
+        "find",
+        "wc",
+        "which",
+        "readlink",
+    )
+    _SUBTASK_ALLOWED_VERIFY_WITH_TRUE_PREFIXES: tuple[str, ...] = (
+        "npm run build",
+        "npm run lint",
+        "npm test",
+        "npx eslint",
+    )
+    _SUBTASK_DANGEROUS_COMMAND_RE = re.compile(
+        r"(?:&&|;|(?<!\|)\|(?!\|)|>>?|<|`|\$\(|\b(?:mv|cp|rm|mkdir|touch|tee)\b|\bsed\s+-i\b)",
+        re.IGNORECASE,
+    )
 
     @classmethod
     def _normalize_npm_dependency_list(cls, raw_dependencies: Any) -> list[str]:
@@ -487,12 +563,105 @@ class DecompositionGraph:
             normalized.append(dep)
         return normalized
 
+    @classmethod
+    def _is_safe_subtask_execute_command(cls, command: Any) -> bool:
+        """Whether a subtask-level execute_command is allowed.
+
+        Prevents ownership bypass via mutating shell commands while still
+        allowing verification and dependency-install commands.
+        """
+        if not isinstance(command, str):
+            return False
+
+        normalized = " ".join(command.strip().split())
+        if not normalized:
+            return False
+
+        # Allow a narrow "|| true" suffix only for verification commands.
+        if "||" in normalized:
+            if not normalized.endswith("|| true"):
+                return False
+            if not any(
+                normalized.startswith(prefix)
+                for prefix in cls._SUBTASK_ALLOWED_VERIFY_WITH_TRUE_PREFIXES
+            ):
+                return False
+            normalized = normalized.rsplit("||", 1)[0].strip()
+
+        if cls._SUBTASK_DANGEROUS_COMMAND_RE.search(normalized):
+            return False
+
+        return any(
+            normalized == prefix or normalized.startswith(f"{prefix} ")
+            for prefix in cls._SUBTASK_ALLOWED_COMMAND_PREFIXES
+        )
+
     @staticmethod
     def _normalize_repo_path(raw_path: Any) -> str:
         """Normalize a repository-relative path for internal comparisons."""
         if not isinstance(raw_path, str):
             return ""
-        return raw_path.strip().lstrip("./")
+        normalized = raw_path.strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        if normalized.startswith("/"):
+            normalized = normalized.lstrip("/")
+        return normalized
+
+    # Files that any subtask may write to (scaffold/config files that tools
+    # like ``npm install`` legitimately update, plus shared type definitions
+    # that subtasks are allowed to append to).
+    _SUBTASK_GLOBALLY_WRITABLE_FILES: frozenset[str] = frozenset({
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "src/types.ts",
+    })
+
+    @classmethod
+    def _path_matches_ownership(
+        cls,
+        path: str,
+        files_responsible: list[str],
+    ) -> bool:
+        """Check whether *path* is allowed by a subtask's file ownership list.
+
+        Ownership entries can be:
+        - Exact paths: ``src/App.tsx``
+        - Prefix globs ending with ``/*``: ``src/components/*`` matches any
+          path under ``src/components/``.
+
+        Globally writable files (package.json, src/types.ts, etc.) are always
+        allowed regardless of ownership.
+        """
+        if not path:
+            return False
+
+        normalized = cls._normalize_repo_path(path)
+        if not normalized:
+            return False
+
+        # Globally writable files are always allowed.
+        if normalized in cls._SUBTASK_GLOBALLY_WRITABLE_FILES:
+            return True
+
+        for entry in files_responsible:
+            norm_entry = cls._normalize_repo_path(entry)
+            if not norm_entry:
+                continue
+
+            # Exact match.
+            if normalized == norm_entry:
+                return True
+
+            # Glob-style prefix match: ``src/components/*`` -> ``src/components/``
+            if norm_entry.endswith("/*"):
+                prefix = norm_entry[:-1]  # ``src/components/``
+                if normalized.startswith(prefix):
+                    return True
+
+        return False
 
     @staticmethod
     def _next_unique_subtask_id(existing_ids: set[str], base_id: str) -> str:
@@ -722,25 +891,34 @@ class DecompositionGraph:
     async def _collect_integration_seed_paths(
         self, integration_sandbox_id: str
     ) -> list[str]:
-        """Collect the list of files to seed into a subtask sandbox."""
+        """Collect the list of files to seed into a subtask sandbox.
+
+        Includes base config files, all files under src/, and any files
+        under public/ so that later-layer subtasks see the full
+        integration state.
+        """
         seed_paths: set[str] = set(INTEGRATION_SEED_BASE_FILES)
-        try:
-            entries = await self.sandbox_manager.list_files_recursive(
-                integration_sandbox_id,
-                path="src",
-            )
-            for entry in entries:
-                if entry.is_directory:
-                    continue
-                normalized = str(entry.path).strip().lstrip("./")
-                if normalized.startswith("src/"):
-                    seed_paths.add(normalized)
-        except Exception as e:
-            logger.warning(
-                "collect_integration_seed_paths_failed",
-                sandbox_id=integration_sandbox_id,
-                error=str(e),
-            )
+
+        # Collect files from src/ and public/ directories
+        for search_dir in ("src", "public"):
+            try:
+                entries = await self.sandbox_manager.list_files_recursive(
+                    integration_sandbox_id,
+                    path=search_dir,
+                )
+                for entry in entries:
+                    if entry.is_directory:
+                        continue
+                    normalized = self._normalize_repo_path(str(entry.path))
+                    if normalized.startswith(f"{search_dir}/"):
+                        seed_paths.add(normalized)
+            except Exception as e:
+                logger.warning(
+                    "collect_integration_seed_paths_failed",
+                    sandbox_id=integration_sandbox_id,
+                    search_dir=search_dir,
+                    error=str(e),
+                )
 
         return sorted(seed_paths)
 
@@ -795,7 +973,15 @@ class DecompositionGraph:
             for path, content in files_produced.items():
                 if not isinstance(path, str) or not isinstance(content, str):
                     continue
-                normalized_path = path.strip().lstrip("./")
+                if not content:
+                    logger.warning(
+                        "integration_skip_empty_file",
+                        session_id=session_id,
+                        path=path,
+                        agent_id=agent_id,
+                    )
+                    continue
+                normalized_path = self._normalize_repo_path(path)
                 if not normalized_path or normalized_path in TEMPLATE_SCAFFOLD_FILES:
                     continue
                 file_sources.setdefault(normalized_path, []).append((agent_id, content))
@@ -1265,6 +1451,30 @@ class DecompositionGraph:
                 synced_subtask_ids = list(dict.fromkeys(synced_subtask_ids))
                 sync_state_changed = True
 
+                # If new dependencies were added, run npm install on the
+                # integration sandbox so later-layer subtask seeds get
+                # consistent node_modules.
+                if sync_result.get("dependencies_added", 0) > 0:
+                    try:
+                        install_result = await self.sandbox_manager.execute_command(
+                            integration_sandbox_id, "npm install", timeout=120
+                        )
+                        if install_result.exit_code != 0:
+                            logger.warning(
+                                "advance_layer_npm_install_failed",
+                                session_id=session_id,
+                                layer=current_layer_index,
+                                exit_code=install_result.exit_code,
+                                stderr_preview=install_result.stderr[:300],
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "advance_layer_npm_install_error",
+                            session_id=session_id,
+                            layer=current_layer_index,
+                            error=str(e),
+                        )
+
                 logger.info(
                     "layer_sync_complete",
                     session_id=session_id,
@@ -1522,12 +1732,8 @@ class DecompositionGraph:
                     build_output=result["build_output"][:200],
                 )
 
-                # Classify errors for targeted guidance
-                error_categories = classify_build_errors(result["build_output"])
-                error_summary = "\n".join(
-                    f"- {cat}: {len(errs)} errors"
-                    for cat, errs in error_categories.items()
-                )
+                # Classify errors for targeted guidance, include actual error lines
+                error_summary = summarize_build_errors(result["build_output"])
 
                 await self._emit_thinking(
                     session_id, agent_id, agent_role,
@@ -1760,16 +1966,13 @@ class DecompositionGraph:
 
         task_content = f"Complete your assigned subtask:\n\n{description}"
 
-        # If retrying after build failure, prepend the errors
+        # If retrying after build failure, prepend the errors with actual error lines
         if build_errors:
-            error_categories = classify_build_errors(build_errors)
-            category_summary = "\n".join(
-                f"  {cat}: {len(errs)} errors" for cat, errs in error_categories.items()
-            )
+            error_summary = summarize_build_errors(build_errors)
             task_content = (
                 f"RETRY: The previous build failed. Fix these errors:\n\n"
-                f"Error categories:\n{category_summary}\n\n"
-                f"Build output:\n```\n{build_errors[:2000]}\n```\n\n"
+                f"Error breakdown:\n{error_summary}\n\n"
+                f"Full build output:\n```\n{build_errors[:2000]}\n```\n\n"
                 f"Original task: {description}"
             )
 
@@ -1828,10 +2031,56 @@ class DecompositionGraph:
             if response.tool_calls:
                 for tc_data in response.tool_calls:
                     tc = ToolCall(id=tc_data.id, name=tc_data.name, args=tc_data.args)
+
+                    # Enforce file ownership: block write_file calls to
+                    # paths outside this subtask's responsibility.
                     if tc.name == "write_file":
                         edited_path = self._normalize_repo_path(tc.args.get("path"))
-                        if edited_path:
-                            edited_files.add(edited_path)
+
+                        if edited_path and not self._path_matches_ownership(
+                            edited_path, files_responsible
+                        ):
+                            allowed_display = ", ".join(files_responsible) or "(none)"
+                            ownership_msg = (
+                                f"BLOCKED: File '{edited_path}' is owned by another "
+                                f"subtask. You may only write to: {allowed_display}"
+                            )
+                            logger.warning(
+                                "subtask_file_ownership_violation",
+                                session_id=session_id,
+                                agent_id=agent_id,
+                                subtask_id=subtask["id"],
+                                blocked_path=edited_path,
+                            )
+                            messages.append(
+                                format_tool_result_for_llm(tc.id, f"Error: {ownership_msg}")
+                            )
+                            continue
+
+                    if tc.name == "execute_command":
+                        command = tc.args.get("command", "")
+                        if not self._is_safe_subtask_execute_command(command):
+                            blocked_msg = (
+                                "BLOCKED: execute_command may only run safe "
+                                "verification/dependency commands in subtask mode."
+                            )
+                            logger.warning(
+                                "subtask_command_blocked",
+                                session_id=session_id,
+                                agent_id=agent_id,
+                                subtask_id=subtask["id"],
+                                command_preview=str(command)[:200],
+                            )
+                            messages.append(
+                                format_tool_result_for_llm(tc.id, f"Error: {blocked_msg}")
+                            )
+                            continue
+
+                    # Track files actually written (after ownership check).
+                    if tc.name == "write_file":
+                        write_path = self._normalize_repo_path(tc.args.get("path"))
+                        if write_path:
+                            edited_files.add(write_path)
 
                     result = await tool_executor.execute_tool_call(
                         sandbox_id=sandbox_id,
@@ -1843,14 +2092,14 @@ class DecompositionGraph:
 
                     messages.append(format_tool_result_for_llm(tc.id, result.content))
                     if not result.success:
+                        error_snippet = result.content[:1500] if result.content else "Unknown error"
                         messages.append({
                             "role": "user",
                             "content": (
-                                "The previous tool call failed. "
-                                "Analyze the error, identify the "
-                                "root cause, and adjust your "
-                                "approach. Do NOT repeat the "
-                                "same action."
+                                f"The previous tool call `{tc.name}` failed with this error:\n\n"
+                                f"```\n{error_snippet}\n```\n\n"
+                                "Analyze the error output above, identify the root cause, "
+                                "and adjust your approach. Do NOT repeat the same action."
                             ),
                         })
             else:
@@ -1871,15 +2120,15 @@ class DecompositionGraph:
                 )
                 if build_check.exit_code != 0 and not build_check.timed_out:
                     mid_loop_errors = build_check.stdout + "\n" + build_check.stderr
-                    error_summary = "\n".join(
-                        f"  {cat}: {len(errs)} errors"
-                        for cat, errs in classify_build_errors(mid_loop_errors).items()
-                    ) or mid_loop_errors[:500]
+                    error_summary = summarize_build_errors(
+                        mid_loop_errors,
+                        max_lines_per_category=6,
+                    )
                     messages.append({
                         "role": "user",
                         "content": (
                             f"BUILD CHECK FAILED at iteration {iteration}. Fix these errors:\n"
-                            f"{error_summary}\n\nBuild output:\n{mid_loop_errors[:1500]}"
+                            f"{error_summary}\n\nFull build output:\n{mid_loop_errors[:1500]}"
                         ),
                     })
 
@@ -1929,42 +2178,89 @@ class DecompositionGraph:
     async def _collect_sandbox_files(
         self, sandbox_id: str, find_timeout: int = 30
     ) -> dict[str, str]:
-        """Collect all files from a sandbox's src directory.
+        """Collect all relevant files from a sandbox.
+
+        Searches src/ for code files (.tsx, .ts, .jsx, .js, .css, .html,
+        .json, .svg), with a fallback to a top-level search if src/ is
+        empty or missing. Also includes essential root-level config files.
 
         Args:
             sandbox_id: The sandbox to collect from
+            find_timeout: Timeout for the find command in seconds
 
         Returns:
-            Dict mapping path -> content
+            Dict mapping normalized path -> content
         """
-        files = {}
+        files: dict[str, str] = {}
 
-        # List files recursively in src directory
         try:
             result = await self.sandbox_manager.execute_command(
                 sandbox_id,
-                r"find src -type f \( -name '*.tsx' -o -name '*.ts' -o -name '*.css' \)",
+                r"find src -type f \( -name '*.tsx' -o -name '*.ts'"
+                r" -o -name '*.jsx' -o -name '*.js'"
+                r" -o -name '*.css' -o -name '*.html'"
+                r" -o -name '*.json' -o -name '*.svg' \) 2>/dev/null",
                 timeout=find_timeout,
             )
+
+            # Fallback: if src/ doesn't exist or is empty, search top-level
+            if result.exit_code != 0 or not result.stdout.strip():
+                result = await self.sandbox_manager.execute_command(
+                    sandbox_id,
+                    r"find . -maxdepth 3 -type f"
+                    r" \( -name '*.tsx' -o -name '*.ts'"
+                    r" -o -name '*.jsx' -o -name '*.js'"
+                    r" -o -name '*.css' -o -name '*.html'"
+                    r" -o -name '*.json' -o -name '*.svg' \)"
+                    r" ! -path './node_modules/*' ! -path './dist/*'",
+                    timeout=find_timeout,
+                )
 
             if result.exit_code == 0 and result.stdout.strip():
                 file_paths = result.stdout.strip().split("\n")
 
-                for path in file_paths:
-                    path = path.strip()
-                    if path:
-                        try:
-                            content = await self.sandbox_manager.read_file(
-                                sandbox_id, path
-                            )
-                            files[path] = content
-                        except Exception as e:
+                for raw_path in file_paths:
+                    raw_path = raw_path.strip()
+                    if not raw_path:
+                        continue
+                    normalized = self._normalize_repo_path(raw_path)
+                    if not normalized:
+                        continue
+                    try:
+                        content = await self.sandbox_manager.read_file(
+                            sandbox_id, normalized
+                        )
+                        if content:
+                            files[normalized] = content
+                        else:
                             logger.warning(
-                                "collect_file_failed",
+                                "collect_file_empty_content",
                                 sandbox_id=sandbox_id,
-                                path=path,
-                                error=str(e),
+                                path=normalized,
                             )
+                    except Exception as e:
+                        logger.warning(
+                            "collect_file_failed",
+                            sandbox_id=sandbox_id,
+                            path=normalized,
+                            error=str(e),
+                        )
+
+            # Always include root-level config files that can affect build
+            # or runtime wiring, even when src/ exists.
+            for config_file in COLLECT_ROOT_CONFIG_FILES:
+                if config_file in files:
+                    continue
+                try:
+                    content = await self.sandbox_manager.read_file(
+                        sandbox_id, config_file
+                    )
+                    if content:
+                        files[config_file] = content
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    continue
         except Exception as e:
             logger.error(
                 "collect_sandbox_files_error",
@@ -2031,17 +2327,35 @@ class DecompositionGraph:
         shared_types: str,
         subtask_types: str,
     ) -> str:
-        """Extract additive type blocks that are not already in shared types."""
+        """Extract additive AND modified type blocks relative to shared types.
+
+        Returns new type blocks that are not in shared_types, as well as
+        modified versions of existing blocks.  Modified blocks are emitted
+        with a ``// [modified]`` marker so the integration merge can
+        distinguish them from purely new additions.
+        """
         shared_blocks = self._split_type_blocks(shared_types)
         subtask_blocks = self._split_type_blocks(subtask_types)
         if not subtask_blocks:
             return ""
 
-        seen = {
+        # Build a lookup of normalised shared blocks for exact-match skipping.
+        shared_normalized: set[str] = {
             self._normalize_type_block(block)
             for block in shared_blocks
             if self._normalize_type_block(block)
         }
+
+        # Build a lookup keyed by the *declaration name* so we can detect
+        # when a subtask modified an existing shared block rather than just
+        # appending a new one.
+        shared_name_to_block: dict[str, str] = {}
+        for block in shared_blocks:
+            name = self._declaration_name(block)
+            if name:
+                shared_name_to_block[name] = self._normalize_type_block(block)
+
+        seen: set[str] = set(shared_normalized)
         additions: list[str] = []
 
         for block in subtask_blocks:
@@ -2049,22 +2363,72 @@ class DecompositionGraph:
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
-            additions.append(block)
+
+            # Check if this is a modification of an existing shared block.
+            decl_name = self._declaration_name(block)
+            if decl_name and decl_name in shared_name_to_block:
+                # The block has the same declaration name but different body
+                # — this is a modification, not a new addition.
+                additions.append(f"// [modified] {decl_name}\n{block}")
+            else:
+                additions.append(block)
 
         return "\n\n".join(additions).strip()
+
+    @staticmethod
+    def _declaration_name(block: str) -> str:
+        """Extract the top-level declaration name from a TypeScript block.
+
+        Recognises ``export (interface|type|enum|const|function) Name``.
+        Returns the *Name* or an empty string if no declaration is found.
+        """
+        if not block:
+            return ""
+        first_line = block.strip().splitlines()[0]
+        match = re.match(
+            r"^export\s+(?:default\s+)?(?:interface|type|enum|const|function)\s+"
+            r"([A-Za-z_$][A-Za-z0-9_$]*)",
+            first_line,
+        )
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _unwrap_modified_type_block(block: str) -> tuple[str, str]:
+        """Parse `// [modified] Name` marker and return `(Name, block_body)`."""
+        if not block:
+            return "", ""
+        lines = block.splitlines()
+        if not lines:
+            return "", ""
+
+        marker = lines[0].strip()
+        match = re.match(
+            r"^//\s*\[modified\]\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*$",
+            marker,
+        )
+        if not match:
+            return "", ""
+
+        body = "\n".join(lines[1:]).strip()
+        return match.group(1), body
 
     def _merge_shared_types(
         self,
         base_types: str,
         successful_results: list[SubtaskResult],
     ) -> tuple[str, int]:
-        """Merge additive type blocks from successful subtasks into shared types."""
+        """Merge additive and modified type blocks into shared types."""
         merged_blocks = self._split_type_blocks(base_types)
         seen = {
             self._normalize_type_block(block)
             for block in merged_blocks
             if self._normalize_type_block(block)
         }
+        declaration_to_index: dict[str, int] = {}
+        for i, block in enumerate(merged_blocks):
+            declaration_name = self._declaration_name(block)
+            if declaration_name and declaration_name not in declaration_to_index:
+                declaration_to_index[declaration_name] = i
         added_count = 0
 
         ordered_results = sorted(
@@ -2074,11 +2438,42 @@ class DecompositionGraph:
         for result in ordered_results:
             additions = str(result.get("type_additions", ""))
             for block in self._split_type_blocks(additions):
+                modified_decl_name, modified_body = self._unwrap_modified_type_block(block)
+                if modified_decl_name:
+                    normalized_modified = self._normalize_type_block(modified_body)
+                    if not normalized_modified:
+                        continue
+
+                    existing_index = declaration_to_index.get(modified_decl_name)
+                    if existing_index is not None:
+                        current_normalized = self._normalize_type_block(
+                            merged_blocks[existing_index]
+                        )
+                        if current_normalized == normalized_modified:
+                            continue
+                        if current_normalized:
+                            seen.discard(current_normalized)
+                        merged_blocks[existing_index] = modified_body
+                        seen.add(normalized_modified)
+                        added_count += 1
+                        continue
+
+                    if normalized_modified in seen:
+                        continue
+                    seen.add(normalized_modified)
+                    declaration_to_index[modified_decl_name] = len(merged_blocks)
+                    merged_blocks.append(modified_body)
+                    added_count += 1
+                    continue
+
                 normalized = self._normalize_type_block(block)
                 if not normalized or normalized in seen:
                     continue
                 seen.add(normalized)
                 merged_blocks.append(block)
+                declaration_name = self._declaration_name(block)
+                if declaration_name and declaration_name not in declaration_to_index:
+                    declaration_to_index[declaration_name] = len(merged_blocks) - 1
                 added_count += 1
 
         merged_content = "\n\n".join(merged_blocks).strip()
@@ -2386,13 +2781,30 @@ class DecompositionGraph:
                 agent_id=aggregator_id,
             )
 
-            if response.content.strip():
+            merged = response.content.strip()
+            # Strip common markdown fencing artifacts that models sometimes
+            # wrap around code output.
+            if merged.startswith("```") and merged.endswith("```"):
+                # Remove opening fence (with optional language tag) and closing fence
+                lines = merged.split("\n")
+                if len(lines) > 2:
+                    merged = "\n".join(lines[1:-1]).strip()
+
+            if merged:
                 logger.info(
                     "merge_conflict_resolved_by_llm",
                     path=path,
                     session_id=session_id,
+                    merged_length=len(merged),
                 )
-                return response.content.strip()
+                return merged
+            else:
+                logger.warning(
+                    "merge_conflict_llm_returned_empty",
+                    path=path,
+                    session_id=session_id,
+                    merged_length=len(merged),
+                )
 
         except Exception as e:
             logger.warning(
@@ -2830,6 +3242,7 @@ Rules:
             )
 
         retries_used = retries
+        retries_at_entry = retries  # Track initial count to limit one fix per invocation.
         entrypoint_gap = self._find_entrypoint_wiring_gap(state)
         if entrypoint_gap:
             logger.warning(
@@ -2883,6 +3296,10 @@ Rules:
                     "error_message": entrypoint_gap,
                 }
 
+            # Entrypoint fix succeeded (its internal build passed) — skip
+            # to the build-success path below instead of falling through
+            # to the build-fix branch which would consume a second retry.
+
         # Run npm run build
         await self.event_bus.publish(
             AgentEvent(
@@ -2926,7 +3343,7 @@ Rules:
 
         build_success = build_result.exit_code == 0
 
-        if not build_success and retries < 2:
+        if not build_success and retries < 2 and retries_used == retries_at_entry:
             # Attempt to fix errors with LLM (with timeout)
             logger.info(
                 "integration_review_attempting_fix",
@@ -3036,6 +3453,17 @@ Rules:
             session_id, integration_id, "Integration", "integration_review"
         )
 
+        # When the build failed but retries remain, return "integrating" so
+        # _should_retry_integration can re-enter for the build fix.
+        if not build_success and retries_used < 2:
+            return {
+                "final_build_success": False,
+                "final_preview_url": None,
+                "integration_retries": retries_used,
+                "status": "integrating",
+                "error_message": "Build failed, retries remain",
+            }
+
         return {
             "final_build_success": build_success,
             "final_preview_url": None,
@@ -3072,17 +3500,25 @@ Rules:
             ),
             build_tooling_contract(),
         )
+        error_summary = summarize_build_errors(build_output)
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": f"""The build failed with these errors:
+                "content": f"""Original task: {state['task']}
 
+The integrated build failed. Error breakdown:
+{error_summary}
+
+Full build output:
 ```
 {build_output[:3000]}
 ```
 
-Please analyze the errors and fix them. Use the write_file tool to update the necessary files.""",
+Steps:
+1. Use `read_file` on each file mentioned in the errors to see current contents.
+2. Apply focused fixes to resolve the errors.
+3. Do NOT rewrite files from scratch - make minimal edits.""",
             },
         ]
 

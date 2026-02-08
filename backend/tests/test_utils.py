@@ -14,6 +14,7 @@ from agents.utils import (
     ToolCallData,
     _convert_message_to_dict,
     _convert_messages_to_dicts,
+    _enforce_tool_call_pairing,
     count_tokens_estimate,
     extract_json_from_response,
     format_assistant_message_with_tools,
@@ -329,6 +330,30 @@ class TestSlidingWindowPrune:
         assert isinstance(pruned[1], dict)
         assert pruned[0]["content"] == "system"
         assert pruned[1]["content"] == "task"
+
+    def test_strips_tool_calls_when_matching_result_is_missing(self) -> None:
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "assistant",
+                "content": "calling tool",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
+
+        selected_indexes = {0, 1, 2}
+        normalized = [_convert_message_to_dict(msg) for msg in messages]
+        _enforce_tool_call_pairing(selected_indexes, messages, normalized)
+
+        assert selected_indexes == {0, 1, 2}
+        assert "tool_calls" not in normalized[2]
 
 
 # =========================================================================

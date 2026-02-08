@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import operator
+import shlex
 import time
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -28,8 +29,8 @@ from agents.prompts import (
     EVALUATOR_PROMPT,
     REVIEW_PROMPT,
     SOLVER_PERSONAS,
-    SYNTHESIS_PROMPT,
     get_solver_prompt,
+    get_synthesis_prompt,
 )
 from agents.tools import (
     ToolCall,
@@ -38,7 +39,6 @@ from agents.tools import (
 )
 from agents.utils import (
     LLMClient,
-    classify_build_errors,
     extract_json_from_response,
     format_assistant_message_with_tools,
     format_tool_result_for_llm,
@@ -46,6 +46,7 @@ from agents.utils import (
     parse_plan_tag,
     parse_status_tag,
     sliding_window_prune,
+    summarize_build_errors,
 )
 from config import settings
 from events.bus import EventBus
@@ -173,6 +174,10 @@ def create_hypothesis_initial_state(
     Returns:
         Initial HypothesisState dict
     """
+    # Clamp num_hypotheses to [1, len(SOLVER_PERSONAS)] to prevent
+    # zero-solver runs or index-out-of-range on temperature lookup.
+    num_hypotheses = max(1, min(num_hypotheses, len(SOLVER_PERSONAS)))
+
     # Assign personas based on num_hypotheses
     persona_names = list(SOLVER_PERSONAS.keys())[:num_hypotheses]
 
@@ -287,30 +292,36 @@ class HypothesisGraph:
     async def _emit_node_active(
         self, session_id: str, agent_id: str, agent_role: str, node_name: str
     ) -> None:
-        """Emit GRAPH_NODE_ACTIVE event."""
-        await self.event_bus.publish(
-            AgentEvent(
-                type=EventType.GRAPH_NODE_ACTIVE,
-                session_id=session_id,
-                agent_id=agent_id,
-                agent_role=agent_role,
-                data={"node_id": node_name},
+        """Emit GRAPH_NODE_ACTIVE event.  Best-effort — never raises."""
+        try:
+            await self.event_bus.publish(
+                AgentEvent(
+                    type=EventType.GRAPH_NODE_ACTIVE,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    agent_role=agent_role,
+                    data={"node_id": node_name},
+                )
             )
-        )
+        except Exception:
+            logger.warning("event_emission_failed", event="node_active", node=node_name)
 
     async def _emit_node_complete(
         self, session_id: str, agent_id: str, agent_role: str, node_name: str
     ) -> None:
-        """Emit GRAPH_NODE_COMPLETE event."""
-        await self.event_bus.publish(
-            AgentEvent(
-                type=EventType.GRAPH_NODE_COMPLETE,
-                session_id=session_id,
-                agent_id=agent_id,
-                agent_role=agent_role,
-                data={"node_id": node_name},
+        """Emit GRAPH_NODE_COMPLETE event.  Best-effort — never raises."""
+        try:
+            await self.event_bus.publish(
+                AgentEvent(
+                    type=EventType.GRAPH_NODE_COMPLETE,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    agent_role=agent_role,
+                    data={"node_id": node_name},
+                )
             )
-        )
+        except Exception:
+            logger.warning("event_emission_failed", event="node_complete", node=node_name)
 
     async def _emit_thinking(
         self,
@@ -320,19 +331,22 @@ class HypothesisGraph:
         content: str,
         streaming: bool = False,
     ) -> None:
-        """Emit AGENT_THINKING event."""
-        await self.event_bus.publish(
-            AgentEvent(
-                type=EventType.AGENT_THINKING,
-                session_id=session_id,
-                agent_id=agent_id,
-                agent_role=agent_role,
-                data={
-                    "content": content,
-                    "streaming": streaming,
-                },
+        """Emit AGENT_THINKING event.  Best-effort — never raises."""
+        try:
+            await self.event_bus.publish(
+                AgentEvent(
+                    type=EventType.AGENT_THINKING,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    agent_role=agent_role,
+                    data={
+                        "content": content,
+                        "streaming": streaming,
+                    },
+                )
             )
-        )
+        except Exception:
+            logger.warning("event_emission_failed", event="thinking", agent_id=agent_id)
 
     def _remaining_session_budget_seconds(self) -> float:
         """Return remaining wall-clock budget for the current session."""
@@ -376,15 +390,8 @@ class HypothesisGraph:
 
     @staticmethod
     def _summarize_build_errors(build_output: str) -> str:
-        """Classify build errors and return a one-line-per-category summary."""
-        categories = classify_build_errors(build_output)
-        if categories:
-            return "\n".join(
-                f"- {cat}: {len(errs)} errors"
-                for cat, errs in categories.items()
-            )
-        # Fallback: return truncated raw output when no patterns match
-        return build_output[:500] if build_output else "Unknown build error"
+        """Classify build errors and return a structured summary with actual error lines."""
+        return summarize_build_errors(build_output)
 
     @staticmethod
     def _clip_with_ellipsis(content: str, max_chars: int) -> str:
@@ -424,18 +431,29 @@ class HypothesisGraph:
         if any(phrase in normalized for phrase in negative_phrases):
             return False
 
-        improvement_keywords = [
-            "improv",
-            "enhance",
-            "fix",
-            "missing",
-            "should",
-            "needs",
-            "need to",
-            "could add",
+        # Use targeted multi-word phrases to avoid false positives from
+        # single words like "should" or "missing" that appear in neutral
+        # evaluator commentary.
+        improvement_phrases = [
+            "could be improved by",
             "should add",
+            "should fix",
+            "should include",
+            "should implement",
+            "needs improvement",
+            "needs to be fixed",
+            "needs to add",
+            "missing feature",
+            "would benefit from",
+            "could add",
+            "recommend adding",
+            "recommend fixing",
+            "enhance by",
+            "improve by adding",
+            "improve by fixing",
+            "fixing the",
         ]
-        return any(keyword in normalized for keyword in improvement_keywords)
+        return any(phrase in normalized for phrase in improvement_phrases)
 
     # -------------------------------------------------------------------------
     # Node: Broadcast
@@ -495,7 +513,7 @@ class HypothesisGraph:
             List of Send objects, one per solver
         """
         sends = []
-        personas = state.get("solver_personas", ["clarity", "completeness", "creativity"])
+        personas = state["solver_personas"]
 
         # Strategic temperature spread for diversity
         # clarity=0.3 (deterministic), completeness=0.7 (balanced),
@@ -799,12 +817,19 @@ class HypothesisGraph:
                 ]
             }
 
-        except Exception as e:
+        except BaseException as e:
+            # BaseException catches asyncio.CancelledError (a BaseException in
+            # Python 3.9+) so that a cancelled solver still returns a fallback
+            # result to the fan-in aggregator instead of crashing the graph.
+            if isinstance(e, SystemExit | KeyboardInterrupt):
+                raise
+
             logger.error(
                 "solve_error",
                 session_id=session_id,
                 solver_index=solver_index,
                 error=str(e),
+                error_type=type(e).__name__,
                 exc_info=True,
             )
 
@@ -830,15 +855,17 @@ class HypothesisGraph:
 
             # Best-effort sandbox cleanup on failure to prevent leaks.
             # The sandbox may not exist yet if creation itself failed.
+            sandbox_destroyed = False
             with contextlib.suppress(Exception):
                 await self.sandbox_manager.destroy_sandbox(sandbox_id)
+                sandbox_destroyed = True
 
             return {
                 "hypothesis_results": [
                     HypothesisResult(
                         agent_id=agent_id,
                         persona=persona,
-                        sandbox_id=sandbox_id,
+                        sandbox_id="" if sandbox_destroyed else sandbox_id,
                         files={},
                         edited_files=[],
                         build_success=False,
@@ -969,12 +996,14 @@ class HypothesisGraph:
 
                     messages.append(format_tool_result_for_llm(tc.id, result.content))
                     if not result.success:
+                        error_snippet = result.content[:1500] if result.content else "Unknown error"
                         messages.append({
                             "role": "user",
                             "content": (
-                                "The previous tool call failed. Analyze the error, "
-                                "identify the root cause, and adjust your approach. "
-                                "Do NOT repeat the same action."
+                                f"The previous tool call `{tc.name}` failed with this error:\n\n"
+                                f"```\n{error_snippet}\n```\n\n"
+                                "Analyze the error output above, identify the root cause, "
+                                "and adjust your approach. Do NOT repeat the same action."
                             ),
                         })
             else:
@@ -1059,26 +1088,44 @@ class HypothesisGraph:
             "edited_files": sorted(edited_files),
         }
 
+    # Root-level config files that are essential for reproducing a build.
+    _ROOT_CONFIG_FILES: tuple[str, ...] = (
+        "index.html",
+        "package.json",
+        "tsconfig.json",
+        "vite.config.ts",
+        "postcss.config.js",
+        "postcss.config.cjs",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+        "eslint.config.js",
+    )
+
     async def _collect_sandbox_files(
         self, sandbox_id: str, find_timeout: int = 30
     ) -> dict[str, str]:
         """Collect all relevant files from a sandbox.
 
+        Collects source files (tsx, ts, jsx, js, css, html, json, svg)
+        under ``src/`` and essential root-level config files.
+
         Args:
             sandbox_id: The sandbox to collect from
+            find_timeout: Maximum seconds for file discovery commands
 
         Returns:
             Dict mapping path -> content
         """
-        files = {}
+        files: dict[str, str] = {}
 
-        # List files in src directory only (excludes template noise like
-        # package.json, tsconfig, etc.)
         try:
+            # Collect source files under src/ with expanded extensions
             result = await self.sandbox_manager.execute_command(
                 sandbox_id,
                 r"find src -type f \( -name '*.tsx' -o -name '*.ts'"
-                r" -o -name '*.css' \) 2>/dev/null",
+                r" -o -name '*.jsx' -o -name '*.js'"
+                r" -o -name '*.css' -o -name '*.html'"
+                r" -o -name '*.json' -o -name '*.svg' \) 2>/dev/null",
                 timeout=find_timeout,
             )
 
@@ -1087,7 +1134,10 @@ class HypothesisGraph:
                 result = await self.sandbox_manager.execute_command(
                     sandbox_id,
                     r"find . -maxdepth 3 -type f"
-                    r" \( -name '*.tsx' -o -name '*.ts' -o -name '*.css' \)"
+                    r" \( -name '*.tsx' -o -name '*.ts'"
+                    r" -o -name '*.jsx' -o -name '*.js'"
+                    r" -o -name '*.css' -o -name '*.html'"
+                    r" -o -name '*.json' -o -name '*.svg' \)"
                     r" ! -path './node_modules/*' ! -path './dist/*'",
                     timeout=find_timeout,
                 )
@@ -1098,18 +1148,43 @@ class HypothesisGraph:
                 for path in file_paths:
                     path = path.strip()
                     if path:
+                        normalized_path = self._normalize_repo_path(path)
+                        if not normalized_path:
+                            continue
                         try:
                             content = await self.sandbox_manager.read_file(
-                                sandbox_id, path
+                                sandbox_id, normalized_path
                             )
-                            files[path] = content
+                            if content:
+                                files[normalized_path] = content
+                            else:
+                                logger.warning(
+                                    "collect_file_empty_content",
+                                    sandbox_id=sandbox_id,
+                                    path=normalized_path,
+                                )
                         except Exception as e:
                             logger.warning(
                                 "collect_file_failed",
                                 sandbox_id=sandbox_id,
-                                path=path,
+                                path=normalized_path,
                                 error=str(e),
                             )
+
+            # Also collect essential root-level config files
+            for config_file in self._ROOT_CONFIG_FILES:
+                if config_file in files:
+                    continue
+                try:
+                    content = await self.sandbox_manager.read_file(
+                        sandbox_id, config_file
+                    )
+                    if content:
+                        files[config_file] = content
+                except (FileNotFoundError, Exception):
+                    # Config file may not exist; that's fine
+                    pass
+
         except Exception as e:
             logger.error(
                 "collect_sandbox_files_error",
@@ -1144,7 +1219,12 @@ class HypothesisGraph:
         """Normalize a repository-relative path for internal comparisons."""
         if not isinstance(raw_path, str):
             return ""
-        return raw_path.strip().lstrip("./")
+        normalized = raw_path.strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        if normalized.startswith("/"):
+            normalized = normalized.lstrip("/")
+        return normalized
 
     @staticmethod
     def _result_has_entrypoint_edit(result: HypothesisResult) -> bool:
@@ -1389,92 +1469,105 @@ class HypothesisGraph:
                 "status": "failed",
             }
 
-        # Build evaluation prompt
-        solutions_text = self._build_solutions_text(hypothesis_results)
+        # Build evaluation prompt and call evaluator LLM.  If the evaluator
+        # call or JSON parsing fails entirely, fall through to deterministic
+        # fallback scores so the graph can still select a winner.
+        parsed = None
+        scores: list[EvaluationScore] = []
+        selected_agent_id = ""
+        selected_index = 0
+        reasoning = ""
+        used_deterministic_fallback = False
 
-        messages = [
-            {"role": "system", "content": EVALUATOR_PROMPT},
-            {
-                "role": "user",
-                "content": f"""Original task: {state['task']}
+        try:
+            solutions_text = self._build_solutions_text(hypothesis_results)
+
+            messages = [
+                {"role": "system", "content": EVALUATOR_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"""Original task: {state['task']}
 
 Here are {len(hypothesis_results)} solutions to evaluate:
 
 {solutions_text}
 
 Please evaluate each solution according to the rubric and select the best one.""",
-            },
-        ]
-
-        # Call evaluator LLM
-        response = await self.llm_client.call(
-            messages=messages,
-            model=self.evaluator_model,
-            temperature=0.3,  # Lower temperature for evaluation
-            session_id=session_id,
-            agent_id=evaluator_id,
-        )
-
-        # Extract and emit chain-of-thought analysis if present
-        analysis = parse_analysis_tag(response.content)
-        if analysis:
-            await self._emit_thinking(
-                session_id, evaluator_id, "Evaluator", f"Analysis:\n{analysis}"
-            )
-
-        # Emit full response as thinking
-        await self._emit_thinking(
-            session_id, evaluator_id, "Evaluator", response.content
-        )
-
-        # Parse evaluation JSON
-        parsed = extract_json_from_response(response.content)
-        retry_temperatures = [0.2, 0.1]
-        retry_prompts = [
-            (
-                "Your response was not valid JSON. Respond with ONLY valid JSON using this shape: "
-                '{"scores":[{"agent_id":"","build":0,"lint":0,"quality":0,"completeness":0,"ux":0,"total":0.0,"notes":""}],'
-                '"selected":"solver_1","reasoning":"..."}'
-            ),
-            (
-                "Repair your previous output into strict valid JSON only. "
-                "No markdown, no prose, no trailing commentary."
-            ),
-        ]
-
-        for retry_index, (retry_temperature, retry_prompt) in enumerate(
-            zip(retry_temperatures, retry_prompts, strict=True), start=1
-        ):
-            if parsed:
-                break
-
-            logger.warning(
-                "evaluate_json_parse_failed",
-                session_id=session_id,
-                attempt=retry_index,
-            )
-
-            retry_messages = messages + [
-                {"role": "assistant", "content": response.content},
-                {"role": "user", "content": retry_prompt},
+                },
             ]
 
+            # Call evaluator LLM
             response = await self.llm_client.call(
-                messages=retry_messages,
+                messages=messages,
                 model=self.evaluator_model,
-                temperature=retry_temperature,
+                temperature=0.3,  # Lower temperature for evaluation
                 session_id=session_id,
                 agent_id=evaluator_id,
             )
 
-            parsed = extract_json_from_response(response.content)
+            # Extract and emit chain-of-thought analysis if present
+            analysis = parse_analysis_tag(response.content)
+            if analysis:
+                await self._emit_thinking(
+                    session_id, evaluator_id, "Evaluator", f"Analysis:\n{analysis}"
+                )
 
-        # Extract evaluation results
-        scores = []
-        selected_agent_id = ""
-        selected_index = 0
-        reasoning = ""
-        used_deterministic_fallback = False
+            # Emit full response as thinking
+            await self._emit_thinking(
+                session_id, evaluator_id, "Evaluator", response.content
+            )
+
+            # Parse evaluation JSON
+            parsed = extract_json_from_response(response.content)
+            retry_temperatures = [0.2, 0.1]
+            retry_prompts = [
+                (
+                    "Your response was not valid JSON. Respond with ONLY "
+                    "valid JSON using this shape: "
+                    '{"scores":[{"agent_id":"","build":0,"lint":0,"quality":0,"completeness":0,"ux":0,"total":0.0,"notes":""}],'
+                    '"selected":"solver_1","reasoning":"..."}'
+                ),
+                (
+                    "Repair your previous output into strict valid JSON only. "
+                    "No markdown, no prose, no trailing commentary."
+                ),
+            ]
+
+            for retry_index, (retry_temperature, retry_prompt) in enumerate(
+                zip(retry_temperatures, retry_prompts, strict=True), start=1
+            ):
+                if parsed:
+                    break
+
+                logger.warning(
+                    "evaluate_json_parse_failed",
+                    session_id=session_id,
+                    attempt=retry_index,
+                )
+
+                retry_messages = messages + [
+                    {"role": "assistant", "content": response.content},
+                    {"role": "user", "content": retry_prompt},
+                ]
+
+                response = await self.llm_client.call(
+                    messages=retry_messages,
+                    model=self.evaluator_model,
+                    temperature=retry_temperature,
+                    session_id=session_id,
+                    agent_id=evaluator_id,
+                )
+
+                parsed = extract_json_from_response(response.content)
+
+        except Exception as e:
+            logger.error(
+                "evaluate_llm_call_failed",
+                session_id=session_id,
+                error=str(e),
+                exc_info=True,
+            )
+            # parsed stays None → deterministic fallback will be used below
 
         if parsed:
             raw_scores = parsed.get("scores", [])
@@ -1482,15 +1575,27 @@ Please evaluate each solution according to the rubric and select the best one.""
             reasoning = parsed.get("reasoning", "")
 
             for score_data in raw_scores:
+                build = score_data.get("build", 0)
+                lint = score_data.get("lint", 0)
+                quality = score_data.get("quality", 0)
+                completeness = score_data.get("completeness", 0)
+                ux = score_data.get("ux", 0)
+                # Recalculate total from component scores using the rubric
+                # weights (30/15/25/20/10) to prevent LLM arithmetic errors.
+                recalculated_total = round(
+                    (build * 0.30) + (lint * 0.15) + (quality * 0.25)
+                    + (completeness * 0.20) + (ux * 0.10),
+                    2,
+                )
                 scores.append(
                     EvaluationScore(
                         agent_id=score_data.get("agent_id", ""),
-                        build=score_data.get("build", 0),
-                        lint=score_data.get("lint", 0),
-                        quality=score_data.get("quality", 0),
-                        completeness=score_data.get("completeness", 0),
-                        ux=score_data.get("ux", 0),
-                        total=score_data.get("total", 0.0),
+                        build=build,
+                        lint=lint,
+                        quality=quality,
+                        completeness=completeness,
+                        ux=ux,
+                        total=recalculated_total,
                         notes=score_data.get("notes", ""),
                     )
                 )
@@ -1882,16 +1987,36 @@ Key file contents:
         sandbox_id = winning_result.get("sandbox_id", "")
         improvements = state.get("evaluation_reasoning", "")
 
+        if not sandbox_id:
+            logger.warning(
+                "synthesize_missing_sandbox_id",
+                session_id=session_id,
+                selected_index=selected_index,
+            )
+            await self._emit_node_complete(
+                session_id, synthesis_id, "Synthesizer", "synthesize"
+            )
+            return {}
+
         logger.info(
             "synthesize_start",
             session_id=session_id,
             sandbox_id=sandbox_id,
         )
 
-        # Build synthesis prompt
-        system_prompt = SYNTHESIS_PROMPT.format(
-            improvements=improvements,
+        # Snapshot original files so we can rollback if synthesis breaks the build.
+        pre_synthesis_files = dict(winning_result.get("files", {}))
+        pre_synthesis_build_success = winning_result.get("build_success", False)
+
+        # Allocate synthesis time budget from remaining session budget.
+        synthesis_budget = max(
+            15, int(self._remaining_session_budget_seconds() - 30)
+        )
+
+        # Build synthesis prompt with full workspace context
+        system_prompt = get_synthesis_prompt(
             task=state["task"],
+            improvements=improvements,
         )
 
         messages: list[dict[str, Any]] = [
@@ -1909,51 +2034,185 @@ Key file contents:
             auto_preview=False,
         )
 
-        # Mini react loop (5 iterations max)
-        for _iteration in range(5):
-            response = await self.llm_client.call(
-                messages=messages,
-                tools=get_tool_definitions_for_llm(),
+        synthesis_succeeded = True
+
+        async def _run_synthesis_loop() -> None:
+            """Mini react loop (5 iterations max)."""
+            for _iteration in range(5):
+                response = await self.llm_client.call(
+                    messages=messages,
+                    tools=get_tool_definitions_for_llm(),
+                    session_id=session_id,
+                    agent_id=synthesis_id,
+                    temperature=0.5,
+                )
+
+                plan = parse_plan_tag(response.content) or response.content
+                await self._emit_thinking(session_id, synthesis_id, "Synthesizer", plan)
+
+                status_tag = parse_status_tag(response.content)
+                is_complete_signal = status_tag == "TASK_COMPLETE"
+                if status_tag is None:
+                    is_complete_signal = "task_complete" in response.content.lower()
+
+                if is_complete_signal and not response.tool_calls:
+                    break
+
+                assistant_message = format_assistant_message_with_tools(
+                    response.content, response.tool_calls
+                )
+                messages.append(assistant_message)
+
+                if response.tool_calls:
+                    for tc_data in response.tool_calls:
+                        tc = ToolCall(id=tc_data.id, name=tc_data.name, args=tc_data.args)
+                        result = await tool_executor.execute_tool_call(
+                            sandbox_id=sandbox_id,
+                            tool_call=tc,
+                            session_id=session_id,
+                            agent_id=synthesis_id,
+                            agent_role="Synthesizer",
+                        )
+                        messages.append(format_tool_result_for_llm(tc.id, result.content))
+                else:
+                    break
+
+        try:
+            await asyncio.wait_for(
+                _run_synthesis_loop(),
+                timeout=synthesis_budget,
+            )
+        except TimeoutError:
+            logger.warning(
+                "synthesize_timeout",
                 session_id=session_id,
-                agent_id=synthesis_id,
-                temperature=0.5,
+                budget_seconds=synthesis_budget,
             )
-
-            plan = parse_plan_tag(response.content) or response.content
-            await self._emit_thinking(session_id, synthesis_id, "Synthesizer", plan)
-
-            status_tag = parse_status_tag(response.content)
-            is_complete_signal = status_tag == "TASK_COMPLETE"
-            if status_tag is None:
-                is_complete_signal = "task_complete" in response.content.lower()
-
-            if is_complete_signal and not response.tool_calls:
-                break
-
-            assistant_message = format_assistant_message_with_tools(
-                response.content, response.tool_calls
+            synthesis_succeeded = False
+        except Exception as e:
+            logger.error(
+                "synthesize_error",
+                session_id=session_id,
+                error=str(e),
+                exc_info=True,
             )
-            messages.append(assistant_message)
+            synthesis_succeeded = False
 
-            if response.tool_calls:
-                for tc_data in response.tool_calls:
-                    tc = ToolCall(id=tc_data.id, name=tc_data.name, args=tc_data.args)
-                    result = await tool_executor.execute_tool_call(
-                        sandbox_id=sandbox_id,
-                        tool_call=tc,
+        # Post-synthesis build check: if the original solution built
+        # successfully, verify synthesis didn't break it.
+        if synthesis_succeeded and pre_synthesis_build_success:
+            try:
+                build_check = await self.sandbox_manager.execute_command(
+                    sandbox_id, "npm run build", timeout=60
+                )
+                if build_check.exit_code != 0 or build_check.timed_out:
+                    logger.warning(
+                        "synthesize_build_regressed",
                         session_id=session_id,
-                        agent_id=synthesis_id,
-                        agent_role="Synthesizer",
+                        sandbox_id=sandbox_id,
                     )
-                    messages.append(format_tool_result_for_llm(tc.id, result.content))
-            else:
-                break
+                    synthesis_succeeded = False
+            except Exception:
+                synthesis_succeeded = False
 
-        logger.info("synthesize_complete", session_id=session_id)
+        # Re-collect files from the sandbox so the winning result reflects
+        # all changes made during synthesis.
+        updated_files = await self._collect_sandbox_files(sandbox_id, find_timeout=15)
+
+        logger.info(
+            "synthesize_complete",
+            session_id=session_id,
+            files_after_synthesis=len(updated_files),
+            synthesis_succeeded=synthesis_succeeded,
+        )
 
         await self._emit_node_complete(
             session_id, synthesis_id, "Synthesizer", "synthesize"
         )
+
+        # Mutate the winning entry dict directly — TypedDict dicts are plain
+        # dicts at runtime.
+        #
+        # Guard 1: If synthesis broke the build, rollback to pre-synthesis files.
+        # Guard 2: Only replace if synthesis actually produced files.  An empty
+        # dict (from sandbox destruction or collection failure) would discard
+        # the solver's original output.
+        if not synthesis_succeeded and pre_synthesis_files:
+            restore_failed_paths: list[str] = []
+            for path, content in pre_synthesis_files.items():
+                try:
+                    await self.sandbox_manager.write_file(sandbox_id, path, content)
+                except Exception as e:
+                    restore_failed_paths.append(path)
+                    logger.warning(
+                        "synthesize_rollback_restore_failed",
+                        session_id=session_id,
+                        sandbox_id=sandbox_id,
+                        path=path,
+                        error=str(e),
+                    )
+
+            # Best-effort cleanup: remove files introduced during synthesis that
+            # were not part of the original winning snapshot.
+            extra_paths = sorted(set(updated_files) - set(pre_synthesis_files))
+            for path in extra_paths:
+                normalized = self._normalize_repo_path(path)
+                if (
+                    not normalized
+                    or normalized.startswith("..")
+                    or "/../" in normalized
+                ):
+                    continue
+                try:
+                    cleanup = await self.sandbox_manager.execute_command(
+                        sandbox_id,
+                        f"rm -f -- {shlex.quote(normalized)}",
+                        timeout=10,
+                    )
+                    if cleanup.exit_code != 0:
+                        logger.warning(
+                            "synthesize_rollback_cleanup_failed",
+                            session_id=session_id,
+                            sandbox_id=sandbox_id,
+                            path=normalized,
+                            exit_code=cleanup.exit_code,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "synthesize_rollback_cleanup_error",
+                        session_id=session_id,
+                        sandbox_id=sandbox_id,
+                        path=normalized,
+                        error=str(e),
+                    )
+
+            if restore_failed_paths:
+                try:
+                    restored_files = await self._collect_sandbox_files(
+                        sandbox_id, find_timeout=10
+                    )
+                except Exception:
+                    restored_files = {}
+                if restored_files:
+                    winning_result["files"] = restored_files
+                else:
+                    winning_result["files"] = pre_synthesis_files
+            else:
+                winning_result["files"] = pre_synthesis_files
+            logger.info(
+                "synthesize_rollback",
+                session_id=session_id,
+                restored_file_count=len(pre_synthesis_files),
+            )
+        elif updated_files:
+            winning_result["files"] = updated_files
+        else:
+            logger.warning(
+                "synthesize_empty_file_collection",
+                session_id=session_id,
+                sandbox_id=sandbox_id,
+                original_file_count=len(winning_result.get("files", {})),
+            )
 
         return {}
 
@@ -1984,6 +2243,7 @@ Key file contents:
 
         hypothesis_results = state.get("hypothesis_results", [])
         selected_index = state.get("selected_index", 0)
+        selected_agent_id = state.get("selected_agent_id", "")
 
         if not hypothesis_results:
             logger.error(
@@ -1998,12 +2258,36 @@ Key file contents:
                 "error_message": "No hypothesis results to finalize",
             }
 
-        # Get winning result
-        if selected_index < 0 or selected_index >= len(hypothesis_results):
-            selected_index = 0
+        # Resolve winning result by selected_agent_id first (authoritative),
+        # falling back to selected_index for backwards compatibility.
+        winning_result = None
+        if selected_agent_id:
+            for i, result in enumerate(hypothesis_results):
+                if result.get("agent_id") == selected_agent_id:
+                    winning_result = result
+                    selected_index = i
+                    break
 
-        winning_result = hypothesis_results[selected_index]
+        if winning_result is None:
+            if selected_index < 0 or selected_index >= len(hypothesis_results):
+                selected_index = 0
+            winning_result = hypothesis_results[selected_index]
+
         final_sandbox_id = winning_result.get("sandbox_id", "")
+
+        if not final_sandbox_id:
+            logger.error(
+                "finalize_no_sandbox_id",
+                session_id=session_id,
+                selected_agent=winning_result.get("agent_id"),
+            )
+            await self._emit_node_complete(
+                session_id, finalize_id, "Finalizer", "finalize"
+            )
+            return {
+                "status": "failed",
+                "error_message": "No sandbox ID for winning solution",
+            }
 
         logger.info(
             "finalize_start",
@@ -2015,11 +2299,10 @@ Key file contents:
         # Cleanup losing sandboxes before starting preview — this runs
         # regardless of whether the preview server succeeds.
         for result in hypothesis_results:
-            if result.get("sandbox_id") != final_sandbox_id:
+            result_sandbox = result.get("sandbox_id", "")
+            if result_sandbox and result_sandbox != final_sandbox_id:
                 try:
-                    await self.sandbox_manager.destroy_sandbox(
-                        result.get("sandbox_id", "")
-                    )
+                    await self.sandbox_manager.destroy_sandbox(result_sandbox)
                 except Exception as e:
                     logger.warning(
                         "finalize_cleanup_sandbox_failed",

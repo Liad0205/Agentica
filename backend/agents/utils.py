@@ -729,6 +729,117 @@ async def rate_limited_completion(
     )
 
 
+def _enforce_tool_call_pairing(
+    selected_indexes: set[int],
+    messages: list[Any],
+    normalized_messages: list[dict[str, Any]],
+) -> None:
+    """Enforce that tool-call assistant messages and tool-result messages are
+    kept or dropped as atomic pairs.
+
+    After the selection passes in ``sliding_window_prune``, orphaned tool
+    results (whose assistant message was pruned) and assistant tool-call
+    messages (whose results were pruned) can remain.  LLM providers reject
+    such messages with BadRequestError.
+
+    This function mutates *selected_indexes* in-place (and may patch
+    *messages* / *normalized_messages* to strip tool_calls from surviving
+    assistant messages whose results were dropped).
+
+    Args:
+        selected_indexes: Mutable set of message indexes currently selected.
+        messages: The original (possibly LangChain) message list.
+        normalized_messages: Plain-dict copies produced by _convert_message_to_dict.
+    """
+    # Build lookup: tool_call_id -> index of the assistant message that
+    # issued that tool call.
+    tool_call_origin: dict[str, int] = {}
+    for idx in range(len(messages)):
+        msg = normalized_messages[idx]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                tc_id = tc.get("id", "")
+                if tc_id:
+                    tool_call_origin[tc_id] = idx
+
+    # Iteratively fix orphans until stable.  Dropping a tool-result may
+    # orphan another assistant message, so we loop.
+    changed = True
+    while changed:
+        changed = False
+
+        # 1) Drop orphaned tool-result messages whose assistant message
+        #    was pruned.
+        orphaned_tool_results: set[int] = set()
+        for idx in list(selected_indexes):
+            msg = normalized_messages[idx]
+            if msg.get("role") == "tool":
+                tc_id = msg.get("tool_call_id", "")
+                origin_idx = tool_call_origin.get(tc_id)
+                if origin_idx is not None and origin_idx not in selected_indexes:
+                    orphaned_tool_results.add(idx)
+
+        if orphaned_tool_results:
+            selected_indexes -= orphaned_tool_results
+            changed = True
+
+        # 2) For surviving assistant messages with tool_calls, verify that
+        #    ALL their tool-result messages also survived.  If any result
+        #    is missing, strip the tool_calls (converting the message to a
+        #    plain assistant message) to preserve the reasoning content,
+        #    and drop the surviving results (now orphaned).
+        for idx in list(selected_indexes):
+            msg = normalized_messages[idx]
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+
+            tc_ids = [tc.get("id", "") for tc in msg["tool_calls"] if tc.get("id")]
+            if not tc_ids:
+                continue
+
+            # Find the indexes of corresponding tool-result messages by id.
+            result_index_by_id: dict[str, int] = {}
+            for other_idx in range(idx + 1, len(messages)):
+                other = normalized_messages[other_idx]
+                if other.get("role") != "tool":
+                    continue
+                tool_call_id = str(other.get("tool_call_id", ""))
+                if (
+                    tool_call_id in tc_ids
+                    and tool_call_id not in result_index_by_id
+                ):
+                    result_index_by_id[tool_call_id] = other_idx
+                    if len(result_index_by_id) == len(tc_ids):
+                        break
+
+            missing_result_ids = [
+                tc_id
+                for tc_id in tc_ids
+                if tc_id not in result_index_by_id
+                or result_index_by_id[tc_id] not in selected_indexes
+            ]
+            if missing_result_ids:
+                # Strip tool_calls from the normalised copy.
+                msg.pop("tool_calls", None)
+
+                # Patch the original message so the result list is clean.
+                original = messages[idx]
+                if isinstance(original, dict):
+                    original.pop("tool_calls", None)
+                elif hasattr(original, "tool_calls"):
+                    # LangChain message object -- replace with a patched dict.
+                    patched = _convert_message_to_dict(original)
+                    patched.pop("tool_calls", None)
+                    messages[idx] = patched
+
+                # Drop any surviving tool-result messages for this
+                # (now stripped) assistant message.
+                for ri in result_index_by_id.values():
+                    if ri in selected_indexes:
+                        selected_indexes.discard(ri)
+                        changed = True
+
+
 def sliding_window_prune(
     messages: list[Any],
     max_messages: int | None = None,
@@ -739,6 +850,11 @@ def sliding_window_prune(
     Keeps the system message (index 0), the original user task (index 1),
     and the most recent N messages. Drops middle messages to stay within
     token/count limits.
+
+    After selection, tool-call/tool-result pairing is enforced so that
+    orphaned tool results or assistant messages with missing results are
+    cleaned up.  This prevents LLM providers from rejecting the pruned
+    history with BadRequestError.
 
     Args:
         messages: Full message history
@@ -835,6 +951,9 @@ def sliding_window_prune(
         if recent_added >= recent_target and selected_tokens <= max_tokens:
             break
 
+    # Enforce tool-call / tool-result pairing integrity.
+    _enforce_tool_call_pairing(selected_indexes, messages, normalized_messages)
+
     kept_sorted = sorted(selected_indexes)
     dropped_count = len(messages) - len(kept_sorted)
     if dropped_count <= 0:
@@ -910,6 +1029,10 @@ def parse_status_tag(response: str) -> str | None:
     Agents are instructed to wrap their completion status in <status> tags.
     Valid values: TASK_COMPLETE, NEEDS_REVISION.
 
+    If the response contains multiple <status> tags (e.g. the LLM included
+    an example inside a code block), the *last* match is returned, since
+    the LLM's actual conclusion typically appears at the end of the response.
+
     Args:
         response: The full LLM response text
 
@@ -917,9 +1040,9 @@ def parse_status_tag(response: str) -> str | None:
         The status string if found (e.g. "TASK_COMPLETE"), or None
     """
     pattern = r"<status>\s*(TASK_COMPLETE|NEEDS_REVISION)\s*</status>"
-    match = re.search(pattern, response, re.IGNORECASE)
-    if match:
-        return match.group(1).upper()
+    matches = re.findall(pattern, response, re.IGNORECASE)
+    if matches:
+        return matches[-1].upper()
     return None
 
 
@@ -948,15 +1071,17 @@ def topological_sort(subtasks: list[dict[str, Any]]) -> list[list[dict[str, Any]
     Groups subtasks so that all dependencies in layer N are resolved
     before layer N+1 begins. Layer 0 has no dependencies.
 
+    If a circular dependency is detected, remaining tasks are placed into
+    a single final layer and a warning is logged.  This graceful fallback
+    prevents the orchestrator from crashing; the caller can inspect the
+    logs for the cycle warning.
+
     Args:
         subtasks: List of subtask dicts, each with 'id' and 'dependencies' fields
 
     Returns:
         List of layers, where each layer is a list of subtasks that can
         run in parallel
-
-    Raises:
-        ValueError: If a circular dependency is detected
     """
     # Build lookup and dependency graph
     task_map: dict[str, dict[str, Any]] = {}
@@ -1042,6 +1167,34 @@ def classify_build_errors(build_output: str) -> dict[str, list[str]]:
 
     # Remove empty categories
     return {k: v for k, v in categories.items() if v}
+
+
+def summarize_build_errors(build_output: str, *, max_lines_per_category: int = 8) -> str:
+    """Classify build errors and return a structured summary with actual error lines.
+
+    Unlike `classify_build_errors` which returns raw categories, this function
+    formats the output as a human-readable summary suitable for injecting into
+    LLM prompts so the agent can diagnose and fix specific issues.
+
+    Args:
+        build_output: Raw build output string
+        max_lines_per_category: Max error lines to show per category
+
+    Returns:
+        Formatted summary string with actual error lines grouped by category
+    """
+    categories = classify_build_errors(build_output)
+    if categories:
+        parts: list[str] = []
+        for cat, errs in categories.items():
+            sample = errs[:max_lines_per_category]
+            lines = "\n".join(f"  - {err}" for err in sample)
+            overflow = len(errs) - max_lines_per_category
+            suffix = f"\n  ... and {overflow} more" if overflow > 0 else ""
+            parts.append(f"{cat} ({len(errs)} errors):\n{lines}{suffix}")
+        return "\n".join(parts)
+    # Fallback: return truncated raw output when no patterns match
+    return build_output[:1000] if build_output else "Unknown build error"
 
 
 def parse_plan_tag(response: str) -> str:

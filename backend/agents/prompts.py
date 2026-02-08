@@ -6,7 +6,7 @@ This module contains the prompt templates used by different agent types:
 - EVALUATOR_PROMPT: Used in hypothesis mode for scoring solutions
 - REVIEW_PROMPT: Used for self-review in the ReAct loop
 - REFLECTION_PROMPT: Periodic reflection during long-running loops
-- SYNTHESIS_PROMPT: Optional post-evaluation improvement pass
+- get_synthesis_prompt(): Optional post-evaluation improvement pass (composed with base prompt)
 - SOLVER_PERSONAS: Different personas for hypothesis mode solvers
 """
 
@@ -203,6 +203,8 @@ Given a coding task, produce a JSON decomposition with this exact structure:
 - Include component props/interfaces in the description
 - Exactly one subtask must own src/App.tsx and act as final assembly
 - The src/App.tsx assembly subtask must import and render outputs from peer subtasks
+- In the assembly subtask's description, list the specific component files from
+  peer subtasks that it should import (e.g., "import Header from @/components/Header")
 - Prefer fewer, coherent subtasks over fragmented micro-tasks
 - Avoid speculative dependencies; only add packages that are clearly required
 
@@ -371,7 +373,7 @@ State your reflection briefly, then continue with your next action."""
 
 
 # Synthesis prompt for optional post-evaluation improvement in hypothesis mode
-SYNTHESIS_PROMPT = """\
+SYNTHESIS_PROMPT_BODY = """\
 You are a synthesis agent. You have the winning solution \
 from a parallel hypothesis evaluation,
 along with the evaluator's suggested improvements.
@@ -385,7 +387,8 @@ Apply the suggested improvements to the winning solution. Focus on:
 ## Rules
 - Do NOT rewrite the solution from scratch
 - Make targeted, surgical improvements
-- Verify the build still passes after changes
+- Inspect files with `read_file` before editing them
+- After edits, run `npm run build` and `npm run lint` to verify nothing is broken
 - You have limited iterations - be efficient
 
 ## Evaluator's Suggestions
@@ -395,6 +398,27 @@ Apply the suggested improvements to the winning solution. Focus on:
 {task}
 
 Now improve the winning solution using the tools available."""
+
+
+def get_synthesis_prompt(task: str, improvements: str) -> str:
+    """Get the full synthesis prompt with workspace context.
+
+    Args:
+        task: The original user task
+        improvements: The evaluator's suggested improvements
+
+    Returns:
+        The complete synthesis prompt including base prompt and tooling contract
+    """
+    return compose_prompt_sections(
+        BASE_CODING_AGENT_PROMPT,
+        build_session_contract(
+            mode="hypothesis/synthesis",
+            objective="Apply targeted improvements to the winning solution without breaking it.",
+        ),
+        build_tooling_contract(),
+        SYNTHESIS_PROMPT_BODY.format(improvements=improvements, task=task),
+    )
 
 
 # Solver personas for hypothesis testing mode
@@ -502,8 +526,13 @@ def get_subtask_prompt(
     app_entrypoint_note = ""
     if app_entrypoint_owner:
         app_entrypoint_note = (
-            "- Because you own src/App.tsx, it must be the final assembly entrypoint and "
-            "render outputs from dependent subtasks.\n"
+            "- Because you own src/App.tsx, it must be the final assembly entrypoint.\n"
+            "- Before writing src/App.tsx, run `list_files` on `src/` and `src/components/`\n"
+            "  to discover what component files exist from peer subtasks.\n"
+            "- Then use `read_file` on discovered component files to understand their\n"
+            "  default exports and props, so you can import and render them correctly.\n"
+            "- The finished App.tsx must import and render all peer-produced components\n"
+            "  so the complete UI is reachable from the application entrypoint.\n"
         )
 
     return compose_prompt_sections(

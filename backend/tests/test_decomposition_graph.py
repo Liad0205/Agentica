@@ -110,6 +110,18 @@ class TestSubtaskNormalization:
         assert app_subtask["dependencies"] == ["subtask_1"]
 
 
+class TestSubtaskCommandSafety:
+    def test_safe_command_allows_lint_with_true_suffix(self) -> None:
+        graph = _make_graph_for_unit_tests()
+        assert graph._is_safe_subtask_execute_command("npm run lint || true")
+
+    def test_safe_command_blocks_shell_redirection(self) -> None:
+        graph = _make_graph_for_unit_tests()
+        assert not graph._is_safe_subtask_execute_command(
+            "echo hacked > src/App.tsx"
+        )
+
+
 class TestLayerRouting:
     def test_route_after_orchestrate_ends_on_failure(self) -> None:
         graph = _make_graph_for_unit_tests()
@@ -529,6 +541,31 @@ export interface User {
         assert "export interface Item" in merged
         assert merged.count("export type ItemId = string;") == 1
         assert "export interface User" in merged
+
+    def test_merge_shared_types_replaces_marked_modified_declarations(self) -> None:
+        graph = _make_graph_for_unit_tests()
+
+        base_types = """export interface Item {
+  id: string;
+}
+"""
+        successful_results = [
+            {
+                "agent_id": "agent_1",
+                "type_additions": (
+                    "// [modified] Item\n"
+                    "export interface Item {\n"
+                    "  id: number;\n"
+                    "}"
+                ),
+            }
+        ]
+
+        merged, added_count = graph._merge_shared_types(base_types, successful_results)
+        assert added_count == 1
+        assert merged.count("export interface Item") == 1
+        assert "id: number;" in merged
+        assert "id: string;" not in merged
 
     async def test_sync_integration_shared_types_writes_merged_types(self) -> None:
         graph = _make_graph_for_unit_tests()
@@ -979,3 +1016,314 @@ class TestDecompositionGraphExecution:
         assert graph._should_retry_integration(
             {"status": "integrating", "final_build_success": False, "integration_retries": 1}
         ) == "retry"
+
+
+class TestCollectSandboxFiles:
+    async def test_collect_sandbox_files_normalizes_leading_dot_slash(self) -> None:
+        """Files returned with ./ prefix should be normalized."""
+        graph = _make_graph_for_unit_tests()
+
+        # First find (src/) returns empty, fallback find returns ./src/App.tsx
+        call_count = 0
+
+        async def execute_command_side_effect(
+            sandbox_id: str, command: str, timeout: int = 30
+        ):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # src/ search returns nothing
+                return CommandResult(stdout="", stderr="", exit_code=1, timed_out=False)
+            # Fallback search returns paths with ./
+            return CommandResult(
+                stdout="./src/App.tsx\n./src/index.css\n",
+                stderr="",
+                exit_code=0,
+                timed_out=False,
+            )
+
+        graph.sandbox_manager.execute_command = AsyncMock(
+            side_effect=execute_command_side_effect
+        )
+        graph.sandbox_manager.read_file = AsyncMock(return_value="content")
+
+        files = await graph._collect_sandbox_files("sandbox_test")
+
+        # Paths should NOT have leading "./"
+        assert "src/App.tsx" in files
+        assert "src/index.css" in files
+        assert "./src/App.tsx" not in files
+
+    async def test_collect_sandbox_files_includes_jsx_and_json(self) -> None:
+        """Verify .jsx and .json files in src/ are collected."""
+        graph = _make_graph_for_unit_tests()
+
+        graph.sandbox_manager.execute_command = AsyncMock(
+            return_value=CommandResult(
+                stdout="src/App.tsx\nsrc/legacy.jsx\nsrc/locales/en.json\n",
+                stderr="",
+                exit_code=0,
+                timed_out=False,
+            )
+        )
+        graph.sandbox_manager.read_file = AsyncMock(return_value="content")
+
+        files = await graph._collect_sandbox_files("sandbox_test")
+
+        assert "src/App.tsx" in files
+        assert "src/legacy.jsx" in files
+        assert "src/locales/en.json" in files
+
+    async def test_collect_sandbox_files_fallback_when_src_empty(self) -> None:
+        """Fallback search triggers when src/ directory is missing."""
+        graph = _make_graph_for_unit_tests()
+
+        call_count = 0
+
+        async def execute_side_effect(
+            sandbox_id: str, command: str, timeout: int = 30
+        ):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return CommandResult(stdout="", stderr="", exit_code=1, timed_out=False)
+            return CommandResult(
+                stdout="./App.tsx\n", stderr="", exit_code=0, timed_out=False
+            )
+
+        graph.sandbox_manager.execute_command = AsyncMock(side_effect=execute_side_effect)
+        graph.sandbox_manager.read_file = AsyncMock(return_value="content")
+
+        files = await graph._collect_sandbox_files("sandbox_test")
+
+        assert call_count == 2  # src/ search + fallback search
+        assert "App.tsx" in files
+
+    async def test_collect_sandbox_files_includes_root_configs_with_src_present(
+        self,
+    ) -> None:
+        """Essential root config files should be collected even when src/ has files."""
+        graph = _make_graph_for_unit_tests()
+
+        graph.sandbox_manager.execute_command = AsyncMock(
+            return_value=CommandResult(
+                stdout="src/App.tsx\n",
+                stderr="",
+                exit_code=0,
+                timed_out=False,
+            )
+        )
+
+        async def read_file_side_effect(sandbox_id: str, path: str) -> str:
+            if path == "src/App.tsx":
+                return "export default function App() { return null; }"
+            if path == "index.html":
+                return "<!doctype html><html><body><div id='root'></div></body></html>"
+            raise FileNotFoundError(path)
+
+        graph.sandbox_manager.read_file = AsyncMock(side_effect=read_file_side_effect)
+
+        files = await graph._collect_sandbox_files("sandbox_test")
+
+        assert "src/App.tsx" in files
+        assert "index.html" in files
+
+    async def test_collect_sandbox_files_preserves_leading_dot_filenames(self) -> None:
+        """Normalization should keep leading-dot filenames like .eslintrc.json."""
+        graph = _make_graph_for_unit_tests()
+
+        call_count = 0
+
+        async def execute_side_effect(
+            sandbox_id: str, command: str, timeout: int = 30
+        ):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return CommandResult(stdout="", stderr="", exit_code=1, timed_out=False)
+            return CommandResult(
+                stdout="./.eslintrc.json\n",
+                stderr="",
+                exit_code=0,
+                timed_out=False,
+            )
+
+        graph.sandbox_manager.execute_command = AsyncMock(side_effect=execute_side_effect)
+        graph.sandbox_manager.read_file = AsyncMock(return_value='{"rules":{}}')
+
+        files = await graph._collect_sandbox_files("sandbox_test")
+
+        assert ".eslintrc.json" in files
+        assert "eslintrc.json" not in files
+
+
+class TestTemplateScaffoldFiltering:
+    async def test_index_html_not_filtered_during_merge(self) -> None:
+        """index.html should NOT be in TEMPLATE_SCAFFOLD_FILES so it can be merged."""
+        from agents.decomposition_graph import TEMPLATE_SCAFFOLD_FILES
+
+        assert "index.html" not in TEMPLATE_SCAFFOLD_FILES
+
+    async def test_merge_includes_index_html_from_subtask(self) -> None:
+        """Files like index.html should pass through the merge filter."""
+        graph = _make_graph_for_unit_tests()
+        graph.sandbox_manager.write_file = AsyncMock()
+        graph.event_bus.publish = AsyncMock()
+        graph._sync_integration_dependencies = AsyncMock(
+            return_value={"dependencies_added": 0, "dependency_conflicts": []}
+        )
+        graph._sync_integration_shared_types = AsyncMock(
+            return_value={"type_blocks_added": 0}
+        )
+
+        successful_results = [
+            {
+                "agent_id": "agent_1",
+                "files_produced": {
+                    "src/App.tsx": "export default function App() {}",
+                    "index.html": "<html><head><title>Custom Title</title></head></html>",
+                },
+                "dependencies": {},
+                "dev_dependencies": {},
+                "type_additions": "",
+            },
+        ]
+
+        result = await graph._merge_successful_results_into_integration(
+            successful_results=successful_results,
+            integration_sandbox_id="sandbox_integration",
+            session_id="sess_123",
+            aggregator_id="aggregator_123",
+            shared_types="",
+        )
+
+        assert "src/App.tsx" in result["merged_files"]
+        assert "index.html" in result["merged_files"]
+
+
+class TestAdvanceLayerNpmInstall:
+    async def test_advance_layer_runs_npm_install_when_deps_added(self) -> None:
+        """npm install should run on integration sandbox when new dependencies are synced."""
+        graph = _make_graph_for_unit_tests()
+        graph._merge_successful_results_into_integration = AsyncMock(
+            return_value={
+                "merged_files": ["src/Foo.tsx"],
+                "conflicts_resolved": 0,
+                "dependencies_added": 2,
+                "dependency_conflicts": [],
+                "type_blocks_added": 0,
+            }
+        )
+        graph.sandbox_manager.read_file = AsyncMock(return_value="export type X = string;\n")
+        graph.sandbox_manager.execute_command = AsyncMock(
+            return_value=CommandResult(stdout="OK", stderr="", exit_code=0, timed_out=False)
+        )
+
+        await graph._advance_layer(
+            {
+                "current_layer_index": 0,
+                "dependency_layers": [
+                    [{"id": "subtask_1"}],
+                    [{"id": "subtask_2"}],
+                ],
+                "session_id": "sess_123",
+                "integration_sandbox_id": "sandbox_integration",
+                "synced_subtask_ids": [],
+                "shared_types": "",
+                "subtask_results": [
+                    {
+                        "subtask_id": "subtask_1",
+                        "status": "complete",
+                        "agent_id": "agent_subtask_1",
+                    },
+                ],
+            }
+        )
+
+        # Verify npm install was called on the integration sandbox
+        install_calls = [
+            call
+            for call in graph.sandbox_manager.execute_command.await_args_list
+            if "npm install" in str(call)
+        ]
+        assert len(install_calls) >= 1
+
+    async def test_advance_layer_skips_npm_install_when_no_deps_added(self) -> None:
+        """npm install should NOT run when no new dependencies were added."""
+        graph = _make_graph_for_unit_tests()
+        graph._merge_successful_results_into_integration = AsyncMock(
+            return_value={
+                "merged_files": ["src/Bar.tsx"],
+                "conflicts_resolved": 0,
+                "dependencies_added": 0,
+                "dependency_conflicts": [],
+                "type_blocks_added": 1,
+            }
+        )
+        graph.sandbox_manager.read_file = AsyncMock(return_value="export type Y = number;\n")
+
+        await graph._advance_layer(
+            {
+                "current_layer_index": 0,
+                "dependency_layers": [
+                    [{"id": "subtask_1"}],
+                    [{"id": "subtask_2"}],
+                ],
+                "session_id": "sess_123",
+                "integration_sandbox_id": "sandbox_integration",
+                "synced_subtask_ids": [],
+                "shared_types": "",
+                "subtask_results": [
+                    {
+                        "subtask_id": "subtask_1",
+                        "status": "complete",
+                        "agent_id": "agent_subtask_1",
+                    },
+                ],
+            }
+        )
+
+        # No execute_command calls should have been made
+        graph.sandbox_manager.execute_command.assert_not_awaited()
+
+
+class TestIntegrationSeedPaths:
+    async def test_seed_paths_include_public_directory(self) -> None:
+        """_collect_integration_seed_paths should also include files under public/."""
+        graph = _make_graph_for_unit_tests()
+
+        from sandbox.docker_sandbox import FileInfo
+
+        call_count = 0
+
+        async def list_files_side_effect(sandbox_id: str, path: str = "."):
+            nonlocal call_count
+            call_count += 1
+            if path == "src":
+                return [
+                    FileInfo(name="App.tsx", path="src/App.tsx", is_directory=False),
+                    FileInfo(name="index.css", path="src/index.css", is_directory=False),
+                ]
+            if path == "public":
+                return [
+                    FileInfo(name="favicon.svg", path="public/favicon.svg", is_directory=False),
+                ]
+            return []
+
+        graph.sandbox_manager.list_files_recursive = AsyncMock(
+            side_effect=list_files_side_effect
+        )
+
+        paths = await graph._collect_integration_seed_paths("sandbox_integration")
+
+        assert "src/App.tsx" in paths
+        assert "src/index.css" in paths
+        assert "public/favicon.svg" in paths
+        assert "package.json" in paths  # base file
+        assert "index.html" in paths  # base file
+
+    async def test_seed_paths_include_index_html(self) -> None:
+        """index.html should be in INTEGRATION_SEED_BASE_FILES."""
+        from agents.decomposition_graph import INTEGRATION_SEED_BASE_FILES
+
+        assert "index.html" in INTEGRATION_SEED_BASE_FILES

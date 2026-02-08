@@ -86,7 +86,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Execute a shell command in the sandbox terminal. "
             "Use for: npm install, npm run build, npx eslint, npm test, etc. "
-            "Working directory is /workspace. Timeout: 60 seconds."
+            "Working directory is /workspace. Commands have a timeout limit."
         ),
         "parameters": {
             "type": "object",
@@ -300,6 +300,11 @@ class ToolExecutor:
                 if not isinstance(value, str):
                     raise ToolArgumentError(
                         "Invalid type for 'content': expected string"
+                    )
+                if not value:
+                    logger.warning(
+                        "write_file_empty_content",
+                        tool_name=tool_name,
                     )
                 normalized[key] = value
             else:

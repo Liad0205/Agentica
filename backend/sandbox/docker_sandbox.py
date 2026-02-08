@@ -953,12 +953,20 @@ fi >/tmp/devserver.log 2>&1 &
             # Read from source and write to target
             try:
                 content = await self.read_file(source_id, path)
+                if not content:
+                    logger.warning(
+                        "file_copy_empty_content",
+                        source_id=source_id,
+                        target_id=target_id,
+                        path=path,
+                    )
                 await self.write_file(target_id, path, content)
                 logger.debug(
                     "file_copied",
                     source_id=source_id,
                     target_id=target_id,
                     path=path,
+                    content_length=len(content),
                 )
             except FileNotFoundError:
                 logger.debug(

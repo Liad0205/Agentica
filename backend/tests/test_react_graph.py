@@ -192,7 +192,7 @@ class TestReactGraphExecution:
             content = str(getattr(last_message, "content", ""))
 
         assert role in ("user", "human")
-        assert "Continue implementing now based on the review above" in content
+        assert "review above identified issues" in content
 
     @pytest.mark.asyncio
     async def test_completion_blocked_without_build_and_lint_verification(

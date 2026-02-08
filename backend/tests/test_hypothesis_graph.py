@@ -636,9 +636,13 @@ class TestHypothesisGraphExecution:
             {"evaluation_reasoning": ""}
         ) == "finalize"
 
-        # Enabled with reasoning -> synthesize
+        # Enabled with reasoning containing a targeted improvement phrase -> synthesize
         assert graph._should_synthesize(
-            {"evaluation_reasoning": "Improvements: better error handling"}
+            {
+                "evaluation_reasoning": (
+                    "The solution could be improved by adding better error handling"
+                )
+            }
         ) == "synthesize"
 
         # Explicit no-improvement language should not trigger synthesis
@@ -729,3 +733,308 @@ class TestHypothesisGraphExecution:
         events = await collect_events(event_bus, SESSION_ID)
         event_types = [e.type for e in events]
         assert EventType.PREVIEW_READY in event_types
+
+
+class TestCollectSandboxFiles:
+    """Tests for _collect_sandbox_files comprehensiveness."""
+
+    @pytest.mark.asyncio
+    async def test_collects_expanded_file_types(self, mock_sandbox_manager) -> None:
+        """_collect_sandbox_files should find tsx, ts, jsx, js, css, html, json, svg."""
+        graph = _make_graph_for_unit_tests()
+        graph.sandbox_manager = mock_sandbox_manager
+
+        # Simulate find returning expanded file types
+        async def execute_command_side_effect(sandbox_id: str, command: str, timeout: int = 30):
+            if "find src" in command:
+                return CommandResult(
+                    stdout=(
+                        "src/App.tsx\nsrc/main.ts\nsrc/utils.js\n"
+                        "src/helper.jsx\nsrc/style.css\nsrc/index.html\n"
+                        "src/data.json\nsrc/logo.svg\n"
+                    ),
+                    stderr="", exit_code=0, timed_out=False,
+                )
+            return CommandResult(stdout="", stderr="", exit_code=0, timed_out=False)
+
+        mock_sandbox_manager.execute_command = AsyncMock(side_effect=execute_command_side_effect)
+        mock_sandbox_manager.read_file = AsyncMock(return_value="content")
+
+        files = await graph._collect_sandbox_files("sandbox_test")
+
+        assert "src/App.tsx" in files
+        assert "src/main.ts" in files
+        assert "src/utils.js" in files
+        assert "src/helper.jsx" in files
+        assert "src/style.css" in files
+        assert "src/index.html" in files
+        assert "src/data.json" in files
+        assert "src/logo.svg" in files
+
+    @pytest.mark.asyncio
+    async def test_collects_root_config_files(self, mock_sandbox_manager) -> None:
+        """_collect_sandbox_files should also collect root config files."""
+        graph = _make_graph_for_unit_tests()
+        graph.sandbox_manager = mock_sandbox_manager
+
+        async def execute_command_side_effect(sandbox_id: str, command: str, timeout: int = 30):
+            if "find src" in command:
+                return CommandResult(
+                    stdout="src/App.tsx\n",
+                    stderr="", exit_code=0, timed_out=False,
+                )
+            return CommandResult(stdout="", stderr="", exit_code=0, timed_out=False)
+
+        mock_sandbox_manager.execute_command = AsyncMock(side_effect=execute_command_side_effect)
+
+        read_call_count = 0
+
+        async def read_file_side_effect(sandbox_id: str, path: str) -> str:
+            nonlocal read_call_count
+            read_call_count += 1
+            if path in ("package.json", "index.html", "vite.config.ts"):
+                return f"content of {path}"
+            if path == "src/App.tsx":
+                return "app content"
+            raise FileNotFoundError(f"Not found: {path}")
+
+        mock_sandbox_manager.read_file = AsyncMock(side_effect=read_file_side_effect)
+
+        files = await graph._collect_sandbox_files("sandbox_test")
+
+        assert "src/App.tsx" in files
+        assert "package.json" in files
+        assert "index.html" in files
+        assert "vite.config.ts" in files
+        # Non-existent config files should not appear
+        assert "tailwind.config.js" not in files
+
+
+class TestFinalizeResolvesByAgentId:
+    """Tests for _finalize resolving the winner by selected_agent_id."""
+
+    @pytest.mark.asyncio
+    async def test_finalize_resolves_by_agent_id(
+        self, mock_sandbox_manager, event_bus
+    ) -> None:
+        """_finalize should use selected_agent_id to find the winning sandbox,
+        not just selected_index."""
+        graph = _make_graph_for_unit_tests()
+        graph.sandbox_manager = mock_sandbox_manager
+        graph.event_bus = event_bus
+
+        mock_sandbox_manager.start_dev_server = AsyncMock(
+            return_value="http://localhost:5174"
+        )
+
+        state = create_hypothesis_initial_state(
+            task="Build an app",
+            session_id=SESSION_ID,
+            num_hypotheses=2,
+        )
+        state["hypothesis_results"] = [
+            {
+                "agent_id": "solver_1",
+                "persona": "clarity",
+                "sandbox_id": "sandbox_solver1",
+                "files": {"src/App.tsx": "v1"},
+                "edited_files": [],
+                "build_success": True,
+                "build_output": "OK",
+                "lint_errors": 0,
+                "iterations_used": 2,
+                "agent_summary": "done",
+            },
+            {
+                "agent_id": "solver_2",
+                "persona": "creativity",
+                "sandbox_id": "sandbox_solver2",
+                "files": {"src/App.tsx": "v2"},
+                "edited_files": [],
+                "build_success": True,
+                "build_output": "OK",
+                "lint_errors": 0,
+                "iterations_used": 2,
+                "agent_summary": "done",
+            },
+        ]
+        # Intentionally mismatched: selected_agent_id says solver_2 but
+        # selected_index says 0 (solver_1). agent_id should win.
+        state["selected_agent_id"] = "solver_2"
+        state["selected_index"] = 0
+        state["status"] = "finalizing"
+
+        result = await graph._finalize(state)
+
+        assert result["final_sandbox_id"] == "sandbox_solver2"
+        mock_sandbox_manager.start_dev_server.assert_awaited_with("sandbox_solver2")
+
+    @pytest.mark.asyncio
+    async def test_finalize_fails_when_winner_has_no_sandbox_id(
+        self, mock_sandbox_manager, event_bus
+    ) -> None:
+        graph = _make_graph_for_unit_tests()
+        graph.sandbox_manager = mock_sandbox_manager
+        graph.event_bus = event_bus
+
+        state = create_hypothesis_initial_state(
+            task="Build an app",
+            session_id=SESSION_ID,
+            num_hypotheses=1,
+        )
+        state["hypothesis_results"] = [
+            {
+                "agent_id": "solver_1",
+                "persona": "clarity",
+                "sandbox_id": "",
+                "files": {"src/App.tsx": "v1"},
+                "edited_files": [],
+                "build_success": True,
+                "build_output": "OK",
+                "lint_errors": 0,
+                "iterations_used": 2,
+                "agent_summary": "done",
+            }
+        ]
+        state["selected_index"] = 0
+        state["status"] = "finalizing"
+
+        result = await graph._finalize(state)
+
+        assert result["status"] == "failed"
+        assert "No sandbox ID" in result["error_message"]
+        mock_sandbox_manager.start_dev_server.assert_not_awaited()
+
+
+class TestSynthesizeUpdatesFiles:
+    """Tests for _synthesize re-collecting files after modifications."""
+
+    @pytest.mark.asyncio
+    async def test_synthesize_refreshes_winning_result_files(
+        self, mock_sandbox_manager, event_bus
+    ) -> None:
+        """After synthesis, the winning result's files dict should reflect
+        the updated sandbox state."""
+        graph = _make_graph_for_unit_tests()
+        graph.sandbox_manager = mock_sandbox_manager
+        graph.event_bus = event_bus
+
+        # Synthesizer writes a file then completes
+        graph.llm_client.call = AsyncMock(
+            return_value=make_llm_response(content="TASK_COMPLETE")
+        )
+
+        # The sandbox has updated files after synthesis
+        async def execute_command_side_effect(
+            sandbox_id: str, command: str, timeout: int = 30
+        ):
+            if "find src" in command:
+                return CommandResult(
+                    stdout="src/App.tsx\nsrc/NewComponent.tsx\n",
+                    stderr="", exit_code=0, timed_out=False,
+                )
+            return CommandResult(stdout="", stderr="", exit_code=0, timed_out=False)
+
+        mock_sandbox_manager.execute_command = AsyncMock(
+            side_effect=execute_command_side_effect
+        )
+        mock_sandbox_manager.read_file = AsyncMock(return_value="updated content")
+
+        winning_result = {
+            "agent_id": "solver_1",
+            "persona": "clarity",
+            "sandbox_id": "sandbox_solver1",
+            "files": {"src/App.tsx": "original content"},
+            "edited_files": ["src/App.tsx"],
+            "build_success": True,
+            "build_output": "OK",
+            "lint_errors": 0,
+            "iterations_used": 2,
+            "agent_summary": "done",
+        }
+
+        state = create_hypothesis_initial_state(
+            task="Build an app",
+            session_id=SESSION_ID,
+            num_hypotheses=1,
+        )
+        state["hypothesis_results"] = [winning_result]
+        state["selected_index"] = 0
+        state["selected_agent_id"] = "solver_1"
+        state["evaluation_reasoning"] = "Improve error handling"
+        state["status"] = "finalizing"
+
+        await graph._synthesize(state)
+
+        # The winning result should have been mutated with updated files
+        assert "src/NewComponent.tsx" in winning_result["files"]
+        assert winning_result["files"]["src/App.tsx"] == "updated content"
+
+    @pytest.mark.asyncio
+    async def test_synthesize_rollback_restores_sandbox_files_on_regression(
+        self, mock_sandbox_manager, event_bus
+    ) -> None:
+        """If synthesis regresses build, original files should be written back."""
+        graph = _make_graph_for_unit_tests()
+        graph.sandbox_manager = mock_sandbox_manager
+        graph.event_bus = event_bus
+
+        graph.llm_client.call = AsyncMock(
+            return_value=make_llm_response(content="TASK_COMPLETE")
+        )
+
+        async def execute_command_side_effect(
+            sandbox_id: str, command: str, timeout: int = 30
+        ):
+            if command == "npm run build":
+                return CommandResult(
+                    stdout="",
+                    stderr="build failed",
+                    exit_code=1,
+                    timed_out=False,
+                )
+            return CommandResult(stdout="", stderr="", exit_code=0, timed_out=False)
+
+        mock_sandbox_manager.execute_command = AsyncMock(
+            side_effect=execute_command_side_effect
+        )
+        mock_sandbox_manager.write_file = AsyncMock()
+
+        # Pretend synthesis produced changed files before regression was detected.
+        graph._collect_sandbox_files = AsyncMock(
+            return_value={
+                "src/App.tsx": "regressed content",
+                "src/New.tsx": "new file",
+            }
+        )
+
+        winning_result = {
+            "agent_id": "solver_1",
+            "persona": "clarity",
+            "sandbox_id": "sandbox_solver1",
+            "files": {"src/App.tsx": "original content"},
+            "edited_files": ["src/App.tsx"],
+            "build_success": True,
+            "build_output": "OK",
+            "lint_errors": 0,
+            "iterations_used": 2,
+            "agent_summary": "done",
+        }
+
+        state = create_hypothesis_initial_state(
+            task="Build an app",
+            session_id=SESSION_ID,
+            num_hypotheses=1,
+        )
+        state["hypothesis_results"] = [winning_result]
+        state["selected_index"] = 0
+        state["selected_agent_id"] = "solver_1"
+        state["evaluation_reasoning"] = "Improve error handling"
+        state["status"] = "finalizing"
+
+        await graph._synthesize(state)
+
+        mock_sandbox_manager.write_file.assert_awaited_with(
+            "sandbox_solver1", "src/App.tsx", "original content"
+        )
+        assert winning_result["files"]["src/App.tsx"] == "original content"
